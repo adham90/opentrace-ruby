@@ -454,6 +454,119 @@ RSpec.describe OpenTrace do
     end
   end
 
+  describe ".error" do
+    before do
+      configure_opentrace!
+      stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+    end
+
+    it "logs exception with class, message, and backtrace" do
+      error = RuntimeError.new("something broke")
+      error.set_backtrace([
+        "app/models/order.rb:34:in `create'",
+        "/gems/activerecord/lib/ar.rb:100:in `save'"
+      ])
+
+      OpenTrace.error(error)
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            body = parse_log_body(req)
+            body["level"] == "ERROR" &&
+              body["message"] == "something broke" &&
+              body["metadata"]["exception_class"] == "RuntimeError" &&
+              body["metadata"]["exception_message"] == "something broke" &&
+              body["metadata"]["backtrace"].is_a?(Array) &&
+              body["metadata"]["backtrace"].length == 1 # gem line filtered
+          }
+      ).to have_been_made
+    end
+
+    it "merges custom metadata" do
+      error = RuntimeError.new("order failed")
+
+      OpenTrace.error(error, { order_id: 123, user_id: 42 })
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            meta = parse_log_body(req)["metadata"]
+            meta["order_id"] == 123 &&
+              meta["user_id"] == 42 &&
+              meta["exception_class"] == "RuntimeError"
+          }
+      ).to have_been_made
+    end
+
+    it "truncates long exception messages to 500 chars" do
+      error = RuntimeError.new("x" * 1000)
+
+      OpenTrace.error(error)
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            meta = parse_log_body(req)["metadata"]
+            meta["exception_message"].length == 500
+          }
+      ).to have_been_made
+    end
+
+    it "handles exception without backtrace" do
+      error = RuntimeError.new("no backtrace")
+      # Don't set backtrace — simulates an exception that was never raised
+
+      expect {
+        OpenTrace.error(error)
+        sleep 0.3
+      }.not_to raise_error
+    end
+
+    it "respects min_level" do
+      OpenTrace.config.min_level = :fatal
+
+      WebMock.reset!
+      stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+
+      OpenTrace.error(RuntimeError.new("filtered"))
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req| parse_log_body(req)["metadata"]&.key?("exception_class") }
+      ).not_to have_been_made
+    end
+
+    it "inherits config.context" do
+      OpenTrace.config.context = { tenant: "acme" }
+
+      OpenTrace.error(RuntimeError.new("with context"))
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            meta = parse_log_body(req)["metadata"]
+            meta["tenant"] == "acme" && meta["exception_class"] == "RuntimeError"
+          }
+      ).to have_been_made
+    end
+
+    it "does nothing when disabled" do
+      OpenTrace.disable!
+
+      expect {
+        OpenTrace.error(RuntimeError.new("disabled"))
+      }.not_to raise_error
+    end
+  end
+
   describe ".shutdown" do
     it "can be called without error even when unconfigured" do
       expect { OpenTrace.shutdown }.not_to raise_error

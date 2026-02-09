@@ -56,6 +56,27 @@ module OpenTrace
       # Never raise to the host app
     end
 
+    def error(exception, metadata = {})
+      return unless enabled?
+
+      meta = metadata.is_a?(Hash) ? metadata.dup : {}
+      meta[:exception_class]   = exception.class.name
+      meta[:exception_message] = exception.message&.slice(0, 500)
+
+      if exception.backtrace
+        cleaned = if defined?(::Rails) && ::Rails.respond_to?(:backtrace_cleaner)
+                    ::Rails.backtrace_cleaner.clean(exception.backtrace)
+                  else
+                    exception.backtrace.reject { |l| l.include?("/gems/") }
+                  end
+        meta[:backtrace] = cleaned.first(15)
+      end
+
+      log("ERROR", exception.message.to_s, meta)
+    rescue StandardError
+      # Never raise to the host app
+    end
+
     def enabled?
       config.enabled?
     end
