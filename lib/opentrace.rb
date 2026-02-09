@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "socket"
 require_relative "opentrace/version"
 require_relative "opentrace/config"
 require_relative "opentrace/client"
@@ -28,6 +29,9 @@ module OpenTrace
 
       # 2. Merge caller-provided metadata (overrides context)
       meta.merge!(metadata) if metadata.is_a?(Hash)
+
+      # 3. Static context — only fills in keys not already set
+      static_context.each { |k, v| meta[k] ||= v }
 
       # Extract trace_id to top level before building payload
       trace_id = meta.delete(:trace_id)
@@ -68,6 +72,7 @@ module OpenTrace
       shutdown(timeout: 1)
       @config = nil
       @client = nil
+      @static_context = nil
     end
 
     private
@@ -79,10 +84,21 @@ module OpenTrace
     def reset_client!
       @client&.shutdown(timeout: 1)
       @client = nil
+      @static_context = nil
     end
 
     def level_meets_threshold?(level)
       LEVEL_VALUES[level.to_s.upcase].to_i >= config.min_level_value
+    end
+
+    def static_context
+      @static_context ||= {
+        hostname: config.hostname || Socket.gethostname,
+        pid: config.pid || Process.pid,
+        git_sha: config.git_sha || ENV["REVISION"] || ENV["GIT_SHA"] || ENV["HEROKU_SLUG_COMMIT"]
+      }.compact
+    rescue StandardError
+      {}
     end
 
     def resolve_context

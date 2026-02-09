@@ -178,13 +178,16 @@ RSpec.describe OpenTrace do
       ).to have_been_made
     end
 
-    it "sends empty metadata hash when none provided" do
+    it "includes static context even when no metadata provided" do
       OpenTrace.log("INFO", "no meta")
       sleep 0.5
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["metadata"] == {} }
+          .with { |req|
+            meta = JSON.parse(req.body)["metadata"]
+            meta.key?("hostname") && meta.key?("pid")
+          }
       ).to have_been_made
     end
 
@@ -381,6 +384,72 @@ RSpec.describe OpenTrace do
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req| JSON.parse(req.body)["level"] == "INFO" }
+      ).to have_been_made
+    end
+  end
+
+  describe "static context (host/pid/git_sha)" do
+    before do
+      configure_opentrace!
+      stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+    end
+
+    it "auto-populates hostname and pid" do
+      OpenTrace.log("INFO", "static test")
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            meta = JSON.parse(req.body)["metadata"]
+            meta["hostname"].is_a?(String) && !meta["hostname"].empty? &&
+              meta["pid"].is_a?(Integer) && meta["pid"] > 0
+          }
+      ).to have_been_made
+    end
+
+    it "respects config hostname override" do
+      OpenTrace.config.hostname = "web-3"
+      OpenTrace.reset!
+      configure_opentrace!
+      OpenTrace.config.hostname = "web-3"
+      OpenTrace.log("INFO", "custom host")
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req| JSON.parse(req.body)["metadata"]["hostname"] == "web-3" }
+      ).to have_been_made
+    end
+
+    it "picks up REVISION env var for git_sha" do
+      original = ENV["REVISION"]
+      ENV["REVISION"] = "abc123"
+      OpenTrace.reset!
+      configure_opentrace!
+
+      stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+
+      OpenTrace.log("INFO", "git test")
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req| JSON.parse(req.body)["metadata"]["git_sha"] == "abc123" }
+      ).to have_been_made
+    ensure
+      ENV["REVISION"] = original
+    end
+
+    it "user metadata takes precedence over static context" do
+      OpenTrace.log("INFO", "override", { hostname: "custom-host" })
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req| JSON.parse(req.body)["metadata"]["hostname"] == "custom-host" }
       ).to have_been_made
     end
   end

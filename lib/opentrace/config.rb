@@ -6,7 +6,7 @@ module OpenTrace
     LEVELS = { debug: 0, info: 1, warn: 2, error: 3, fatal: 4 }.freeze
 
     attr_accessor :endpoint, :api_key, :service, :environment, :timeout, :enabled,
-                  :context, :min_level
+                  :context, :min_level, :hostname, :pid, :git_sha
 
     def initialize
       @endpoint    = nil
@@ -17,6 +17,9 @@ module OpenTrace
       @enabled     = true
       @context     = nil    # nil | Hash | Proc
       @min_level   = :debug # send everything by default
+      @hostname    = nil
+      @pid         = nil
+      @git_sha     = nil
     end
 
     def valid?
