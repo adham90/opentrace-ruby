@@ -67,7 +67,12 @@ module OpenTrace
 
     def send_payload(uri, payload)
       json = JSON.generate(payload)
-      return if json.bytesize > PAYLOAD_MAX_BYTES
+
+      if json.bytesize > PAYLOAD_MAX_BYTES
+        payload = truncate_payload(payload)
+        json = JSON.generate(payload)
+        return if json.bytesize > PAYLOAD_MAX_BYTES
+      end
 
       http = Net::HTTP.new(uri.host, uri.port)
       http.use_ssl = (uri.scheme == "https")
@@ -84,6 +89,19 @@ module OpenTrace
       http.request(request)
     rescue StandardError
       # Swallow all network errors silently
+    end
+
+    def truncate_payload(payload)
+      meta = payload[:metadata]&.dup || {}
+
+      # Truncation priority: remove largest optional fields first
+      meta.delete(:backtrace)
+      meta.delete(:params)
+      meta.delete(:job_arguments)
+      meta[:sql] = meta[:sql][0, 200] + "..." if meta[:sql].is_a?(String) && meta[:sql].length > 200
+      meta[:exception_message] = meta[:exception_message][0, 200] + "..." if meta[:exception_message].is_a?(String) && meta[:exception_message].length > 200
+
+      payload.merge(metadata: meta)
     end
   end
 end

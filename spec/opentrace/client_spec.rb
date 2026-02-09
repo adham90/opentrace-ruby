@@ -139,16 +139,66 @@ RSpec.describe OpenTrace::Client do
       expect(call_count).to be >= 2
     end
 
-    it "drops oversized payloads silently" do
+    it "truncates oversized payloads instead of dropping" do
       stub = stub_request(:post, "https://opentrace.test/api/logs")
         .to_return(status: 201, body: '{"count":1}')
 
-      # Create a payload larger than 32KB
-      huge_metadata = { data: "x" * 40_000 }
-      client.enqueue({ level: "INFO", message: "big", metadata: huge_metadata })
+      # Large backtrace + params that push over 32KB
+      huge_backtrace = (1..500).map { |i| "app/models/order.rb:#{i}:in `method_#{i}'" }
+      client.enqueue({
+        level: "ERROR",
+        message: "big error",
+        metadata: {
+          backtrace: huge_backtrace,
+          params: { data: "x" * 20_000 },
+          exception_class: "RuntimeError",
+          exception_message: "should survive truncation"
+        }
+      })
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            body = JSON.parse(req.body)
+            meta = body["metadata"]
+            body["message"] == "big error" &&
+              !meta.key?("backtrace") &&
+              !meta.key?("params") &&
+              meta["exception_class"] == "RuntimeError"
+          }
+      ).to have_been_made
+    end
+
+    it "drops truly massive payloads that can't be truncated" do
+      stub = stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+
+      # 40KB message — can't be truncated by metadata trimming
+      client.enqueue({ level: "INFO", message: "x" * 40_000, metadata: {} })
       sleep 0.5
 
       expect(stub).not_to have_been_requested
+    end
+
+    it "passes normal payloads through unchanged" do
+      stub = stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+
+      client.enqueue({
+        level: "INFO",
+        message: "small",
+        metadata: { backtrace: ["line1", "line2"], params: { a: 1 } }
+      })
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            meta = JSON.parse(req.body)["metadata"]
+            meta["backtrace"] == ["line1", "line2"] && meta["params"] == { "a" => 1 }
+          }
+      ).to have_been_made
     end
 
     it "handles server 500 responses without crashing" do
