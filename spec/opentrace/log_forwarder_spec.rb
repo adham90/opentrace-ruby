@@ -17,7 +17,7 @@ RSpec.describe OpenTrace::LogForwarder do
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
-            body = JSON.parse(req.body)
+            body = parse_log_body(req)
             body["level"] == "INFO" && body["message"] == "hello from broadcast"
           }
       ).to have_been_made
@@ -41,7 +41,7 @@ RSpec.describe OpenTrace::LogForwarder do
 
         expect(
           a_request(:post, "https://opentrace.test/api/logs")
-            .with { |req| JSON.parse(req.body)["level"] == expected_level }
+            .with { |req| parse_log_body(req)["level"] == expected_level }
         ).to have_been_made
       end
     end
@@ -52,7 +52,7 @@ RSpec.describe OpenTrace::LogForwarder do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["message"] == "lazy message" }
+          .with { |req| parse_log_body(req)["message"] == "lazy message" }
       ).to have_been_made
     end
 
@@ -62,7 +62,7 @@ RSpec.describe OpenTrace::LogForwarder do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["message"] == "progname message" }
+          .with { |req| parse_log_body(req)["message"] == "progname message" }
       ).to have_been_made
     end
 

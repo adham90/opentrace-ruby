@@ -108,7 +108,7 @@ RSpec.describe OpenTrace do
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
-            body = JSON.parse(req.body)
+            body = parse_log_body(req)
             body["level"] == "INFO" &&
               body["message"] == "test message" &&
               body["service"] == "test-service" &&
@@ -126,7 +126,7 @@ RSpec.describe OpenTrace do
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
-            body = JSON.parse(req.body)
+            body = parse_log_body(req)
             # Matches: 2026-02-08T12:34:56.123456Z
             body["timestamp"].match?(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z\z/)
           }
@@ -139,7 +139,7 @@ RSpec.describe OpenTrace do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["level"] == "INFO" }
+          .with { |req| parse_log_body(req)["level"] == "INFO" }
       ).to have_been_made
     end
 
@@ -149,7 +149,7 @@ RSpec.describe OpenTrace do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["level"] == "WARN" }
+          .with { |req| parse_log_body(req)["level"] == "WARN" }
       ).to have_been_made
     end
 
@@ -159,7 +159,7 @@ RSpec.describe OpenTrace do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["message"] == "12345" }
+          .with { |req| parse_log_body(req)["message"] == "12345" }
       ).to have_been_made
     end
 
@@ -170,7 +170,7 @@ RSpec.describe OpenTrace do
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
-            body = JSON.parse(req.body)
+            body = parse_log_body(req)
             body["trace_id"] == "abc-123" &&
               !body["metadata"].key?("trace_id") &&
               body["metadata"]["other"] == "val"
@@ -185,7 +185,7 @@ RSpec.describe OpenTrace do
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
-            meta = JSON.parse(req.body)["metadata"]
+            meta = parse_log_body(req)["metadata"]
             meta.key?("hostname") && meta.key?("pid")
           }
       ).to have_been_made
@@ -199,7 +199,7 @@ RSpec.describe OpenTrace do
       # Only the safety-net stub should exist, no real request
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["message"] == "should not send" }
+          .with { |req| parse_log_body(req)["message"] == "should not send" }
       ).not_to have_been_made
     end
 
@@ -231,7 +231,7 @@ RSpec.describe OpenTrace do
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
-            body = JSON.parse(req.body)
+            body = parse_log_body(req)
             body["metadata"]["exception"]["class"] == "RuntimeError" &&
               body["metadata"]["user_id"] == 42
           }
@@ -254,7 +254,7 @@ RSpec.describe OpenTrace do
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
-            meta = JSON.parse(req.body)["metadata"]
+            meta = parse_log_body(req)["metadata"]
             meta["tenant"] == "acme" && meta["region"] == "us-east"
           }
       ).to have_been_made
@@ -277,7 +277,7 @@ RSpec.describe OpenTrace do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["metadata"]["user_id"] == 99 }
+          .with { |req| parse_log_body(req)["metadata"]["user_id"] == 99 }
       ).to have_been_made
     end
 
@@ -316,7 +316,7 @@ RSpec.describe OpenTrace do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["level"] == "DEBUG" }
+          .with { |req| parse_log_body(req)["level"] == "DEBUG" }
       ).to have_been_made
     end
 
@@ -334,12 +334,12 @@ RSpec.describe OpenTrace do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["level"] == "WARN" }
+          .with { |req| parse_log_body(req)["level"] == "WARN" }
       ).to have_been_made
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| %w[DEBUG INFO].include?(JSON.parse(req.body)["level"]) }
+          .with { |req| %w[DEBUG INFO].include?(parse_log_body(req)["level"]) }
       ).not_to have_been_made
     end
 
@@ -356,12 +356,12 @@ RSpec.describe OpenTrace do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["level"] == "ERROR" }
+          .with { |req| parse_log_body(req)["level"] == "ERROR" }
       ).to have_been_made
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["level"] == "WARN" }
+          .with { |req| parse_log_body(req)["level"] == "WARN" }
       ).not_to have_been_made
     end
 
@@ -378,12 +378,12 @@ RSpec.describe OpenTrace do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["level"] == "DEBUG" }
+          .with { |req| parse_log_body(req)["level"] == "DEBUG" }
       ).not_to have_been_made
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["level"] == "INFO" }
+          .with { |req| parse_log_body(req)["level"] == "INFO" }
       ).to have_been_made
     end
   end
@@ -402,7 +402,7 @@ RSpec.describe OpenTrace do
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
-            meta = JSON.parse(req.body)["metadata"]
+            meta = parse_log_body(req)["metadata"]
             meta["hostname"].is_a?(String) && !meta["hostname"].empty? &&
               meta["pid"].is_a?(Integer) && meta["pid"] > 0
           }
@@ -419,7 +419,7 @@ RSpec.describe OpenTrace do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["metadata"]["hostname"] == "web-3" }
+          .with { |req| parse_log_body(req)["metadata"]["hostname"] == "web-3" }
       ).to have_been_made
     end
 
@@ -437,7 +437,7 @@ RSpec.describe OpenTrace do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["metadata"]["git_sha"] == "abc123" }
+          .with { |req| parse_log_body(req)["metadata"]["git_sha"] == "abc123" }
       ).to have_been_made
     ensure
       ENV["REVISION"] = original
@@ -449,7 +449,7 @@ RSpec.describe OpenTrace do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["metadata"]["hostname"] == "custom-host" }
+          .with { |req| parse_log_body(req)["metadata"]["hostname"] == "custom-host" }
       ).to have_been_made
     end
   end

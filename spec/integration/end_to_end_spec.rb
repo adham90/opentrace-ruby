@@ -28,7 +28,7 @@ RSpec.describe "End-to-end integration" do
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
-            body = JSON.parse(req.body)
+            body = parse_log_body(req)
             body["level"] == "ERROR" &&
               body["message"] == "Integration test error" &&
               body["service"] == "integration-svc" &&
@@ -75,7 +75,7 @@ RSpec.describe "End-to-end integration" do
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
-            body = JSON.parse(req.body)
+            body = parse_log_body(req)
             body["level"] == "WARN" &&
               body["message"] == "Logger integration test" &&
               body["service"] == "logger-svc"
@@ -86,6 +86,14 @@ RSpec.describe "End-to-end integration" do
 
   describe "multiple rapid logs" do
     it "delivers all logs to the server" do
+      received = []
+      stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return { |req|
+          batch = JSON.parse(req.body)
+          received.concat(batch)
+          { status: 201, body: "{\"count\":#{batch.size}}" }
+        }
+
       configure_opentrace!
 
       count = 20
@@ -93,14 +101,20 @@ RSpec.describe "End-to-end integration" do
 
       OpenTrace.shutdown(timeout: 5)
 
-      expect(
-        a_request(:post, "https://opentrace.test/api/logs")
-      ).to have_been_made.times(count)
+      expect(received.size).to eq(count)
     end
   end
 
   describe "concurrent logging from multiple threads" do
     it "delivers logs without errors" do
+      received = []
+      stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return { |req|
+          batch = JSON.parse(req.body)
+          received.concat(batch)
+          { status: 201, body: "{\"count\":#{batch.size}}" }
+        }
+
       configure_opentrace!
 
       threads = 5.times.map do |t|
@@ -112,9 +126,7 @@ RSpec.describe "End-to-end integration" do
 
       OpenTrace.shutdown(timeout: 5)
 
-      expect(
-        a_request(:post, "https://opentrace.test/api/logs")
-      ).to have_been_made.at_least_times(40)
+      expect(received.size).to eq(50)
     end
   end
 
@@ -135,7 +147,7 @@ RSpec.describe "End-to-end integration" do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["message"] == "after disable" }
+          .with { |req| parse_log_body(req)["message"] == "after disable" }
       ).not_to have_been_made
     end
   end

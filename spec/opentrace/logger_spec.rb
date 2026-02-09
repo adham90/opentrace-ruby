@@ -27,7 +27,7 @@ RSpec.describe OpenTrace::Logger do
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
-            body = JSON.parse(req.body)
+            body = parse_log_body(req)
             body["level"] == "ERROR" && body["message"] == "something broke"
           }
       ).to have_been_made
@@ -40,7 +40,7 @@ RSpec.describe OpenTrace::Logger do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["level"] == "DEBUG" }
+          .with { |req| parse_log_body(req)["level"] == "DEBUG" }
       ).to have_been_made
     end
 
@@ -50,7 +50,7 @@ RSpec.describe OpenTrace::Logger do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["level"] == "INFO" }
+          .with { |req| parse_log_body(req)["level"] == "INFO" }
       ).to have_been_made
     end
 
@@ -60,7 +60,7 @@ RSpec.describe OpenTrace::Logger do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["level"] == "WARN" }
+          .with { |req| parse_log_body(req)["level"] == "WARN" }
       ).to have_been_made
     end
 
@@ -70,7 +70,7 @@ RSpec.describe OpenTrace::Logger do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["level"] == "ERROR" }
+          .with { |req| parse_log_body(req)["level"] == "ERROR" }
       ).to have_been_made
     end
 
@@ -80,7 +80,7 @@ RSpec.describe OpenTrace::Logger do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["level"] == "FATAL" }
+          .with { |req| parse_log_body(req)["level"] == "FATAL" }
       ).to have_been_made
     end
 
@@ -108,7 +108,7 @@ RSpec.describe OpenTrace::Logger do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["message"] == "lazy message" }
+          .with { |req| parse_log_body(req)["message"] == "lazy message" }
       ).to have_been_made
     end
 
@@ -152,7 +152,7 @@ RSpec.describe OpenTrace::Logger do
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
-            body = JSON.parse(req.body)
+            body = parse_log_body(req)
             body["metadata"]["component"] == "worker"
           }
       ).to have_been_made

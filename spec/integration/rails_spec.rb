@@ -240,7 +240,7 @@ RSpec.describe "Rails integration" do
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
-            body = JSON.parse(req.body)
+            body = parse_log_body(req)
             body["level"] == "INFO" &&
               body["message"].include?("GET /users/42 200") &&
               body["metadata"]["controller"] == "UsersController" &&
@@ -264,7 +264,7 @@ RSpec.describe "Rails integration" do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["level"] == "ERROR" }
+          .with { |req| parse_log_body(req)["level"] == "ERROR" }
       ).to have_been_made
     end
 
@@ -283,7 +283,7 @@ RSpec.describe "Rails integration" do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["level"] == "WARN" }
+          .with { |req| parse_log_body(req)["level"] == "WARN" }
       ).to have_been_made
     end
 
@@ -308,7 +308,7 @@ RSpec.describe "Rails integration" do
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
-            body = JSON.parse(req.body)
+            body = parse_log_body(req)
             body["metadata"]["user_id"] == 42
           }
       ).to have_been_made
@@ -371,7 +371,7 @@ RSpec.describe "Rails integration" do
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
-            body = JSON.parse(req.body)
+            body = parse_log_body(req)
             body["level"] == "ERROR" &&
               body["metadata"]["exception_class"] == "ActiveRecord::RecordNotFound" &&
               body["metadata"]["exception_message"] == "Couldn't find Order with id=99" &&
@@ -396,7 +396,7 @@ RSpec.describe "Rails integration" do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["level"] == "ERROR" }
+          .with { |req| parse_log_body(req)["level"] == "ERROR" }
       ).to have_been_made
     end
 
@@ -425,7 +425,7 @@ RSpec.describe "Rails integration" do
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
-            bt = JSON.parse(req.body)["metadata"]["backtrace"]
+            bt = parse_log_body(req)["metadata"]["backtrace"]
             bt.length == 2 && bt.none? { |l| l.include?("/gems/") }
           }
       ).to have_been_made
@@ -454,7 +454,7 @@ RSpec.describe "Rails integration" do
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
-            params = JSON.parse(req.body)["metadata"]["params"]
+            params = parse_log_body(req)["metadata"]["params"]
             params == { "order" => { "product_id" => 99 } }
           }
       ).to have_been_made
@@ -483,7 +483,7 @@ RSpec.describe "Rails integration" do
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
-            params = JSON.parse(req.body)["metadata"]["params"]
+            params = parse_log_body(req)["metadata"]["params"]
             params.is_a?(Hash) && !params.key?("controller") && !params.key?("action")
           }
       ).to have_been_made
@@ -513,7 +513,7 @@ RSpec.describe "Rails integration" do
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
-            params = JSON.parse(req.body)["metadata"]["params"]
+            params = parse_log_body(req)["metadata"]["params"]
             params.is_a?(Hash) && params["_truncated"] == true
           }
       ).to have_been_made
