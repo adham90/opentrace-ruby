@@ -12,8 +12,9 @@ RSpec.describe "Rails integration" do
     ActiveSupport::Notifications.reset!
   end
 
-  # Helper to simulate Rails after_initialize by running the registered blocks
+  # Helper to simulate Rails boot by running initializer + after_initialize blocks
   def run_after_initialize(app)
+    OpenTrace::Railtie.initializer_blocks.each { |block| block.call(app) }
     OpenTrace::Railtie.config.after_initialize_blocks.each { |block| block.call(app) }
   end
 

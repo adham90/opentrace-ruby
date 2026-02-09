@@ -35,6 +35,15 @@ unless defined?(::Rails)
       def self.config
         @config ||= Configuration.new
       end
+
+      def self.initializer(_name, _opts = {}, &block)
+        @initializer_blocks ||= []
+        @initializer_blocks << block
+      end
+
+      def self.initializer_blocks
+        @initializer_blocks || []
+      end
     end
 
     class Application
@@ -42,8 +51,24 @@ unless defined?(::Rails)
         attr_accessor :logger
       end
 
+      class MiddlewareStack
+        attr_reader :entries
+
+        def initialize
+          @entries = []
+        end
+
+        def use(klass, *args)
+          @entries << [klass, args]
+        end
+      end
+
       def config
         @config ||= Configuration.new
+      end
+
+      def middleware
+        @middleware ||= MiddlewareStack.new
       end
     end
   end

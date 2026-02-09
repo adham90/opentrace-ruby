@@ -17,6 +17,7 @@ RSpec.describe "ActiveJob subscriber" do
     Rails.logger = ::Logger.new(StringIO.new)
     app = Rails::Application.new
     app.config.logger = ::Logger.new(StringIO.new)
+    OpenTrace::Railtie.initializer_blocks.each { |block| block.call(app) }
     OpenTrace::Railtie.config.after_initialize_blocks.each { |block| block.call(app) }
   end
 

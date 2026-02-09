@@ -17,6 +17,7 @@ RSpec.describe "SQL subscriber" do
     Rails.logger = ::Logger.new(StringIO.new)
     app = Rails::Application.new
     app.config.logger = ::Logger.new(StringIO.new)
+    OpenTrace::Railtie.initializer_blocks.each { |block| block.call(app) }
     OpenTrace::Railtie.config.after_initialize_blocks.each { |block| block.call(app) }
   end
 
@@ -143,6 +144,7 @@ RSpec.describe "SQL subscriber" do
     ActiveSupport::Notifications.reset!
     app = Rails::Application.new
     app.config.logger = ::Logger.new(StringIO.new)
+    OpenTrace::Railtie.initializer_blocks.each { |block| block.call(app) }
     OpenTrace::Railtie.config.after_initialize_blocks.each { |block| block.call(app) }
 
     # This will have a very short duration (< 100ms), should be filtered
@@ -164,6 +166,7 @@ RSpec.describe "SQL subscriber" do
     ActiveSupport::Notifications.reset!
     app = Rails::Application.new
     app.config.logger = ::Logger.new(StringIO.new)
+    OpenTrace::Railtie.initializer_blocks.each { |block| block.call(app) }
     OpenTrace::Railtie.config.after_initialize_blocks.each { |block| block.call(app) }
 
     WebMock.reset!

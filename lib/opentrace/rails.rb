@@ -5,13 +5,13 @@ if defined?(::Rails::Railtie)
     class Railtie < ::Rails::Railtie
       # Use config.after_initialize so that config/initializers/ files
       # (where the user calls OpenTrace.configure) have already run.
+      # Register middleware early — before the stack is frozen
+      initializer "opentrace.middleware" do |app|
+        app.middleware.use OpenTrace::Middleware
+      end
+
       config.after_initialize do |app|
         next unless OpenTrace.enabled?
-
-        # Insert middleware for request_id propagation
-        if app.respond_to?(:middleware) && app.middleware.respond_to?(:use)
-          app.middleware.use OpenTrace::Middleware
-        end
 
         if Rails.logger.respond_to?(:broadcast_to)
           # Rails 7.1+: register as a broadcast target (non-invasive)
