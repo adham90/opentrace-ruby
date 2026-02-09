@@ -8,6 +8,11 @@ if defined?(::Rails::Railtie)
       config.after_initialize do |app|
         next unless OpenTrace.enabled?
 
+        # Insert middleware for request_id propagation
+        if app.respond_to?(:middleware) && app.middleware.respond_to?(:use)
+          app.middleware.use OpenTrace::Middleware
+        end
+
         if Rails.logger.respond_to?(:broadcast_to)
           # Rails 7.1+: register as a broadcast target (non-invasive)
           Rails.logger.broadcast_to(OpenTrace::LogForwarder.new)

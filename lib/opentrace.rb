@@ -6,6 +6,7 @@ require_relative "opentrace/config"
 require_relative "opentrace/client"
 require_relative "opentrace/logger"
 require_relative "opentrace/log_forwarder"
+require_relative "opentrace/middleware"
 
 module OpenTrace
   LEVEL_VALUES = { "DEBUG" => 0, "INFO" => 1, "WARN" => 2, "ERROR" => 3, "FATAL" => 4 }.freeze
@@ -32,6 +33,9 @@ module OpenTrace
 
       # 3. Static context — only fills in keys not already set
       static_context.each { |k, v| meta[k] ||= v }
+
+      # 4. Request ID from middleware (if not already set by caller or context)
+      meta[:request_id] ||= current_request_id if current_request_id
 
       # Extract trace_id to top level before building payload
       trace_id = meta.delete(:trace_id)
@@ -62,6 +66,14 @@ module OpenTrace
 
     def enable!
       config.enabled = true
+    end
+
+    def current_request_id
+      Thread.current[:opentrace_request_id]
+    end
+
+    def current_request_id=(id)
+      Thread.current[:opentrace_request_id] = id
     end
 
     def shutdown(timeout: 5)
