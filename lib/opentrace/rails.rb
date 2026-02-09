@@ -33,6 +33,16 @@ if defined?(::Rails::Railtie)
         rescue StandardError
           # Swallow - never affect the host app
         end
+
+        # Subscribe to SQL query notifications
+        if OpenTrace.config.sql_logging
+          ActiveSupport::Notifications.subscribe("sql.active_record") do |*args|
+            event = ActiveSupport::Notifications::Event.new(*args)
+            forward_sql_log(event)
+          rescue StandardError
+            # Swallow
+          end
+        end
       end
 
       class << self
@@ -80,6 +90,39 @@ if defined?(::Rails::Railtie)
                     "INFO"
                   end
           message = "#{payload[:method]} #{payload[:path]} #{payload[:status]} #{event.duration&.round(1)}ms"
+
+          OpenTrace.log(level, message, metadata)
+        rescue StandardError
+          # Swallow
+        end
+
+        def forward_sql_log(event)
+          return unless OpenTrace.enabled?
+
+          payload = event.payload
+          duration = event.duration&.round(2)
+          threshold = OpenTrace.config.sql_duration_threshold_ms
+
+          # Skip if below threshold
+          return if threshold > 0 && duration && duration < threshold
+
+          # Skip SCHEMA queries (migrations, structure dumps)
+          return if payload[:name] == "SCHEMA"
+
+          metadata = {
+            sql_name: payload[:name],
+            sql: truncate(payload[:sql], 1000),
+            sql_duration_ms: duration,
+            sql_cached: payload[:cached] || false
+          }.compact
+
+          # Extract table name from SQL for easier filtering
+          if payload[:sql] =~ /\b(?:FROM|INTO|UPDATE|JOIN)\s+[`"]?(\w+)[`"]?/i
+            metadata[:sql_table] = $1
+          end
+
+          level = (duration && duration > 1000) ? "WARN" : "DEBUG"
+          message = "SQL #{payload[:name]} #{duration}ms"
 
           OpenTrace.log(level, message, metadata)
         rescue StandardError
