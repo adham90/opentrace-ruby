@@ -236,6 +236,155 @@ RSpec.describe OpenTrace do
     end
   end
 
+  describe "config.context" do
+    before do
+      configure_opentrace!
+      stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+    end
+
+    it "merges hash context into metadata" do
+      OpenTrace.config.context = { tenant: "acme", region: "us-east" }
+      OpenTrace.log("INFO", "ctx test")
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            meta = JSON.parse(req.body)["metadata"]
+            meta["tenant"] == "acme" && meta["region"] == "us-east"
+          }
+      ).to have_been_made
+    end
+
+    it "evaluates proc context per call" do
+      counter = 0
+      OpenTrace.config.context = -> { counter += 1; { call_num: counter } }
+      OpenTrace.log("INFO", "first")
+      OpenTrace.log("INFO", "second")
+      sleep 0.5
+
+      expect(counter).to be >= 2
+    end
+
+    it "caller metadata overrides context" do
+      OpenTrace.config.context = { user_id: 1 }
+      OpenTrace.log("INFO", "override", { user_id: 99 })
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req| JSON.parse(req.body)["metadata"]["user_id"] == 99 }
+      ).to have_been_made
+    end
+
+    it "swallows broken proc without crashing" do
+      OpenTrace.config.context = -> { raise "boom" }
+      expect { OpenTrace.log("INFO", "safe") }.not_to raise_error
+    end
+
+    it "works with nil context (default)" do
+      OpenTrace.config.context = nil
+      OpenTrace.log("INFO", "nil ctx")
+      sleep 0.5
+
+      expect(a_request(:post, "https://opentrace.test/api/logs")).to have_been_made
+    end
+
+    it "ignores proc returning non-hash" do
+      OpenTrace.config.context = -> { "bad" }
+      OpenTrace.log("INFO", "non-hash")
+      sleep 0.5
+
+      expect(a_request(:post, "https://opentrace.test/api/logs")).to have_been_made
+    end
+  end
+
+  describe "config.min_level" do
+    before do
+      configure_opentrace!
+      stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+    end
+
+    it "sends everything by default (min_level = :debug)" do
+      OpenTrace.log("DEBUG", "debug msg")
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req| JSON.parse(req.body)["level"] == "DEBUG" }
+      ).to have_been_made
+    end
+
+    it "filters out DEBUG and INFO when min_level is :warn" do
+      OpenTrace.config.min_level = :warn
+
+      WebMock.reset!
+      stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+
+      OpenTrace.log("DEBUG", "should not send")
+      OpenTrace.log("INFO", "should not send")
+      OpenTrace.log("WARN", "should send")
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req| JSON.parse(req.body)["level"] == "WARN" }
+      ).to have_been_made
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req| %w[DEBUG INFO].include?(JSON.parse(req.body)["level"]) }
+      ).not_to have_been_made
+    end
+
+    it "filters out WARN when min_level is :error" do
+      OpenTrace.config.min_level = :error
+
+      WebMock.reset!
+      stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+
+      OpenTrace.log("WARN", "should not send")
+      OpenTrace.log("ERROR", "should send")
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req| JSON.parse(req.body)["level"] == "ERROR" }
+      ).to have_been_made
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req| JSON.parse(req.body)["level"] == "WARN" }
+      ).not_to have_been_made
+    end
+
+    it "accepts string min_level" do
+      OpenTrace.config.min_level = "info"
+
+      WebMock.reset!
+      stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+
+      OpenTrace.log("DEBUG", "filtered out")
+      OpenTrace.log("INFO", "passes")
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req| JSON.parse(req.body)["level"] == "DEBUG" }
+      ).not_to have_been_made
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req| JSON.parse(req.body)["level"] == "INFO" }
+      ).to have_been_made
+    end
+  end
+
   describe ".shutdown" do
     it "can be called without error even when unconfigured" do
       expect { OpenTrace.shutdown }.not_to raise_error

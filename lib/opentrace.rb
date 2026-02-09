@@ -7,6 +7,8 @@ require_relative "opentrace/logger"
 require_relative "opentrace/log_forwarder"
 
 module OpenTrace
+  LEVEL_VALUES = { "DEBUG" => 0, "INFO" => 1, "WARN" => 2, "ERROR" => 3, "FATAL" => 4 }.freeze
+
   class << self
     def configure
       yield config
@@ -19,6 +21,16 @@ module OpenTrace
 
     def log(level, message, metadata = {})
       return unless enabled?
+      return unless level_meets_threshold?(level)
+
+      # 1. Start with user-defined context (lowest priority)
+      meta = resolve_context
+
+      # 2. Merge caller-provided metadata (overrides context)
+      meta.merge!(metadata) if metadata.is_a?(Hash)
+
+      # Extract trace_id to top level before building payload
+      trace_id = meta.delete(:trace_id)
 
       payload = {
         timestamp: Time.now.utc.strftime("%Y-%m-%dT%H:%M:%S.%6NZ"),
@@ -26,13 +38,10 @@ module OpenTrace
         service: config.service,
         environment: config.environment,
         message: message.to_s,
-        metadata: metadata.is_a?(Hash) ? metadata : {}
+        metadata: meta.compact
       }
 
-      # Include trace_id from metadata at top level if present
-      if metadata.is_a?(Hash) && metadata[:trace_id]
-        payload[:trace_id] = metadata.delete(:trace_id).to_s
-      end
+      payload[:trace_id] = trace_id.to_s if trace_id
 
       client.enqueue(payload)
     rescue StandardError
@@ -70,6 +79,20 @@ module OpenTrace
     def reset_client!
       @client&.shutdown(timeout: 1)
       @client = nil
+    end
+
+    def level_meets_threshold?(level)
+      LEVEL_VALUES[level.to_s.upcase].to_i >= config.min_level_value
+    end
+
+    def resolve_context
+      ctx = case config.context
+            when Proc then config.context.call
+            when Hash then config.context
+            end
+      ctx.is_a?(Hash) ? ctx.dup : {}
+    rescue StandardError
+      {} # Broken proc? Swallow, never crash.
     end
   end
 end
