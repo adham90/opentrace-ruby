@@ -11,7 +11,7 @@ Gem::Specification.new do |spec|
   spec.summary       = "Thin, safe Ruby client for OpenTrace log ingestion"
   spec.description   = "Forwards structured application logs to an OpenTrace server over HTTP. " \
                         "Designed to never affect application behavior or uptime."
-  spec.homepage      = "https://github.com/opentrace/opentrace-ruby"
+  spec.homepage      = "https://github.com/adham90/opentrace-ruby"
   spec.license       = "MIT"
 
   spec.required_ruby_version = ">= 3.0.0"
