@@ -43,6 +43,14 @@ if defined?(::Rails::Railtie)
             # Swallow
           end
         end
+
+        # Subscribe to ActiveJob notifications
+        ActiveSupport::Notifications.subscribe("perform.active_job") do |*args|
+          event = ActiveSupport::Notifications::Event.new(*args)
+          forward_job_log(event)
+        rescue StandardError
+          # Swallow
+        end
       end
 
       class << self
@@ -90,6 +98,51 @@ if defined?(::Rails::Railtie)
                     "INFO"
                   end
           message = "#{payload[:method]} #{payload[:path]} #{payload[:status]} #{event.duration&.round(1)}ms"
+
+          OpenTrace.log(level, message, metadata)
+        rescue StandardError
+          # Swallow
+        end
+
+        def forward_job_log(event)
+          return unless OpenTrace.enabled?
+
+          payload = event.payload
+          job = payload[:job]
+
+          metadata = {
+            job_class: job.class.name,
+            job_id: job.respond_to?(:job_id) ? job.job_id : nil,
+            queue_name: job.respond_to?(:queue_name) ? job.queue_name : nil,
+            executions: job.respond_to?(:executions) ? job.executions : nil,
+            duration_ms: event.duration&.round(1)
+          }.compact
+
+          # Capture arguments (truncated)
+          if job.respond_to?(:arguments)
+            args_json = JSON.generate(job.arguments)
+            metadata[:job_arguments] = if args_json.bytesize > 512
+                                         args_json[0, 512] + "..."
+                                       else
+                                         job.arguments
+                                       end
+          end
+
+          # Capture exceptions from job failures
+          if payload[:exception_object]
+            metadata[:exception_class]   = payload[:exception_object].class.name
+            metadata[:exception_message] = truncate(payload[:exception_object].message, 500)
+            if payload[:exception_object].backtrace
+              metadata[:backtrace] = clean_backtrace(payload[:exception_object].backtrace).first(15)
+            end
+          end
+
+          level = payload[:exception_object] ? "ERROR" : "INFO"
+          message = if payload[:exception_object]
+                      "Job #{job.class.name} FAILED (attempt #{job.respond_to?(:executions) ? job.executions : '?'})"
+                    else
+                      "Job #{job.class.name} completed #{event.duration&.round(1)}ms"
+                    end
 
           OpenTrace.log(level, message, metadata)
         rescue StandardError
