@@ -51,7 +51,29 @@ if defined?(::Rails::Railtie)
           user_id = extract_user_id(payload)
           metadata[:user_id] = user_id if user_id
 
-          level = payload[:status].to_i >= 500 ? "ERROR" : "INFO"
+          # Exception auto-capture
+          if payload[:exception]
+            metadata[:exception_class]   = payload[:exception][0]
+            metadata[:exception_message] = truncate(payload[:exception][1], 500)
+          end
+
+          if payload[:exception_object]&.backtrace
+            cleaned = clean_backtrace(payload[:exception_object].backtrace)
+            metadata[:backtrace] = cleaned.first(15)
+          end
+
+          # Filtered request params
+          extract_params(payload, metadata)
+
+          level = if payload[:exception]
+                    "ERROR"
+                  elsif payload[:status].to_i >= 500
+                    "ERROR"
+                  elsif payload[:status].to_i >= 400
+                    "WARN"
+                  else
+                    "INFO"
+                  end
           message = "#{payload[:method]} #{payload[:path]} #{payload[:status]} #{event.duration&.round(1)}ms"
 
           OpenTrace.log(level, message, metadata)
@@ -69,6 +91,40 @@ if defined?(::Rails::Railtie)
           end
         rescue StandardError
           nil
+        end
+
+        def extract_params(payload, metadata)
+          controller = payload[:controller_instance]
+          return unless controller
+
+          if controller.respond_to?(:request, true) && controller.request.respond_to?(:filtered_parameters)
+            params = controller.request.filtered_parameters
+            params = params.except("controller", "action")
+            metadata[:params] = truncate_hash(params, 2048) unless params.empty?
+          end
+        rescue StandardError
+          # Swallow
+        end
+
+        def truncate(str, max)
+          return str if str.nil? || str.length <= max
+          str[0, max] + "..."
+        end
+
+        def clean_backtrace(backtrace)
+          if defined?(::Rails) && ::Rails.respond_to?(:backtrace_cleaner)
+            ::Rails.backtrace_cleaner.clean(backtrace)
+          else
+            backtrace.reject { |line| line.include?("/gems/") }
+          end
+        end
+
+        def truncate_hash(hash, max_bytes)
+          json = JSON.generate(hash)
+          return hash if json.bytesize <= max_bytes
+          { _truncated: true, _size: json.bytesize }
+        rescue StandardError
+          { _truncated: true }
         end
       end
     end

@@ -268,7 +268,7 @@ RSpec.describe "Rails integration" do
       ).to have_been_made
     end
 
-    it "logs 4xx responses as INFO" do
+    it "logs 4xx responses as WARN" do
       payload = {
         controller: "SessionsController",
         action: "create",
@@ -283,7 +283,7 @@ RSpec.describe "Rails integration" do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| JSON.parse(req.body)["level"] == "INFO" }
+          .with { |req| JSON.parse(req.body)["level"] == "WARN" }
       ).to have_been_made
     end
 
@@ -348,6 +348,175 @@ RSpec.describe "Rails integration" do
         ActiveSupport::Notifications.instrument("process_action.action_controller", payload) {}
         sleep 0.3
       }.not_to raise_error
+    end
+
+    it "captures exception_class and exception_message" do
+      error = RuntimeError.new("Couldn't find Order with id=99")
+      error.set_backtrace(["app/controllers/orders_controller.rb:10:in `show'", "gems/actionpack/lib/action.rb:42"])
+
+      payload = {
+        controller: "OrdersController",
+        action: "show",
+        method: "GET",
+        path: "/orders/99",
+        status: 404,
+        headers: nil,
+        exception: ["ActiveRecord::RecordNotFound", "Couldn't find Order with id=99"],
+        exception_object: error
+      }
+
+      ActiveSupport::Notifications.instrument("process_action.action_controller", payload) {}
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            body = JSON.parse(req.body)
+            body["level"] == "ERROR" &&
+              body["metadata"]["exception_class"] == "ActiveRecord::RecordNotFound" &&
+              body["metadata"]["exception_message"] == "Couldn't find Order with id=99" &&
+              body["metadata"]["backtrace"].is_a?(Array)
+          }
+      ).to have_been_made
+    end
+
+    it "logs ERROR when exception present even with 200 status" do
+      payload = {
+        controller: "OrdersController",
+        action: "create",
+        method: "POST",
+        path: "/orders",
+        status: 200,
+        headers: nil,
+        exception: ["SomeError", "rescued but still logged"]
+      }
+
+      ActiveSupport::Notifications.instrument("process_action.action_controller", payload) {}
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req| JSON.parse(req.body)["level"] == "ERROR" }
+      ).to have_been_made
+    end
+
+    it "cleans backtrace by filtering gem lines" do
+      error = RuntimeError.new("boom")
+      error.set_backtrace([
+        "app/models/order.rb:34:in `create_line_item'",
+        "/gems/activerecord-7.0/lib/ar.rb:100:in `save'",
+        "app/controllers/orders_controller.rb:18:in `create'"
+      ])
+
+      payload = {
+        controller: "OrdersController",
+        action: "create",
+        method: "POST",
+        path: "/orders",
+        status: 500,
+        headers: nil,
+        exception: ["RuntimeError", "boom"],
+        exception_object: error
+      }
+
+      ActiveSupport::Notifications.instrument("process_action.action_controller", payload) {}
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            bt = JSON.parse(req.body)["metadata"]["backtrace"]
+            bt.length == 2 && bt.none? { |l| l.include?("/gems/") }
+          }
+      ).to have_been_made
+    end
+
+    it "captures filtered request params" do
+      request_stub = Struct.new(:filtered_parameters).new(
+        { "controller" => "orders", "action" => "create", "order" => { "product_id" => 99 } }
+      )
+      controller_stub = Object.new
+      controller_stub.define_singleton_method(:request) { request_stub }
+
+      payload = {
+        controller: "OrdersController",
+        action: "create",
+        method: "POST",
+        path: "/orders",
+        status: 201,
+        headers: nil,
+        controller_instance: controller_stub
+      }
+
+      ActiveSupport::Notifications.instrument("process_action.action_controller", payload) {}
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            params = JSON.parse(req.body)["metadata"]["params"]
+            params == { "order" => { "product_id" => 99 } }
+          }
+      ).to have_been_made
+    end
+
+    it "strips controller and action from params" do
+      request_stub = Struct.new(:filtered_parameters).new(
+        { "controller" => "orders", "action" => "create", "name" => "test" }
+      )
+      controller_stub = Object.new
+      controller_stub.define_singleton_method(:request) { request_stub }
+
+      payload = {
+        controller: "OrdersController",
+        action: "create",
+        method: "POST",
+        path: "/orders",
+        status: 201,
+        headers: nil,
+        controller_instance: controller_stub
+      }
+
+      ActiveSupport::Notifications.instrument("process_action.action_controller", payload) {}
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            params = JSON.parse(req.body)["metadata"]["params"]
+            params.is_a?(Hash) && !params.key?("controller") && !params.key?("action")
+          }
+      ).to have_been_made
+    end
+
+    it "truncates oversized params" do
+      large_value = "x" * 3000
+      request_stub = Struct.new(:filtered_parameters).new(
+        { "data" => large_value }
+      )
+      controller_stub = Object.new
+      controller_stub.define_singleton_method(:request) { request_stub }
+
+      payload = {
+        controller: "OrdersController",
+        action: "create",
+        method: "POST",
+        path: "/orders",
+        status: 201,
+        headers: nil,
+        controller_instance: controller_stub
+      }
+
+      ActiveSupport::Notifications.instrument("process_action.action_controller", payload) {}
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            params = JSON.parse(req.body)["metadata"]["params"]
+            params.is_a?(Hash) && params["_truncated"] == true
+          }
+      ).to have_been_made
     end
 
     it "does not log when OpenTrace is disabled" do
