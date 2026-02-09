@@ -3,15 +3,25 @@
 if defined?(::Rails::Railtie)
   module OpenTrace
     class Railtie < ::Rails::Railtie
-      initializer "opentrace.configure_logger", after: :initialize_logger do |app|
+      # Use config.after_initialize so that config/initializers/ files
+      # (where the user calls OpenTrace.configure) have already run.
+      config.after_initialize do |app|
         next unless OpenTrace.enabled?
 
-        app.config.logger = OpenTrace::Logger.new(app.config.logger || Rails.logger)
-      end
+        if Rails.logger.respond_to?(:broadcast_to)
+          # Rails 7.1+: register as a broadcast target (non-invasive)
+          Rails.logger.broadcast_to(OpenTrace::LogForwarder.new)
+        else
+          # Pre-7.1 fallback: wrap the logger directly
+          if app.config.logger
+            app.config.logger = OpenTrace::Logger.new(app.config.logger)
+            Rails.logger = app.config.logger
+          elsif Rails.logger
+            Rails.logger = OpenTrace::Logger.new(Rails.logger)
+          end
+        end
 
-      initializer "opentrace.subscribe_to_requests" do
-        next unless OpenTrace.enabled?
-
+        # Subscribe to controller request notifications
         ActiveSupport::Notifications.subscribe("process_action.action_controller") do |*args|
           event = ActiveSupport::Notifications::Event.new(*args)
           forward_request_log(event)

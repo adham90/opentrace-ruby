@@ -60,11 +60,19 @@ module OpenTrace
 
     # Proxy formatter to wrapped logger
     def formatter
-      @wrapped_logger.formatter
+      if @wrapped_logger.respond_to?(:formatter)
+        @wrapped_logger.formatter
+      else
+        super
+      end
     end
 
     def formatter=(f)
-      @wrapped_logger.formatter = f
+      if @wrapped_logger&.respond_to?(:formatter=)
+        @wrapped_logger.formatter = f
+      else
+        super
+      end
     end
 
     private

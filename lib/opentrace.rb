@@ -4,6 +4,7 @@ require_relative "opentrace/version"
 require_relative "opentrace/config"
 require_relative "opentrace/client"
 require_relative "opentrace/logger"
+require_relative "opentrace/log_forwarder"
 
 module OpenTrace
   class << self

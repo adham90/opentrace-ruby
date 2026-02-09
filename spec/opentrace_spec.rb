@@ -7,6 +7,46 @@ RSpec.describe OpenTrace do
         expect(c).to be_a(OpenTrace::Config)
       end
     end
+
+    it "preserves config values across calls" do
+      OpenTrace.configure do |c|
+        c.endpoint = "https://opentrace.test"
+        c.api_key = "key-1"
+        c.service = "svc"
+      end
+
+      OpenTrace.configure do |c|
+        c.api_key = "key-2"
+      end
+
+      expect(OpenTrace.config.api_key).to eq("key-2")
+      expect(OpenTrace.config.endpoint).to eq("https://opentrace.test")
+    end
+
+    it "resets the client when reconfigured" do
+      configure_opentrace!
+
+      stub = stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+
+      OpenTrace.log("INFO", "before reconfig")
+      sleep 0.3
+
+      # Reconfigure with a different endpoint
+      new_stub = stub_request(:post, "https://new-endpoint.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+
+      OpenTrace.configure do |c|
+        c.endpoint = "https://new-endpoint.test"
+        c.api_key = "new-key"
+        c.service = "new-svc"
+      end
+
+      OpenTrace.log("INFO", "after reconfig")
+      sleep 0.5
+
+      expect(new_stub).to have_been_requested
+    end
   end
 
   describe ".enabled?" do
@@ -18,19 +58,39 @@ RSpec.describe OpenTrace do
       configure_opentrace!
       expect(OpenTrace.enabled?).to be true
     end
+
+    it "returns false when a required field is missing" do
+      OpenTrace.configure do |c|
+        c.endpoint = "https://opentrace.test"
+        # missing api_key and service
+      end
+      expect(OpenTrace.enabled?).to be false
+    end
   end
 
   describe ".disable! / .enable!" do
     before { configure_opentrace! }
 
-    it "disables and re-enables" do
-      expect(OpenTrace.enabled?).to be true
-
+    it "disables logging" do
       OpenTrace.disable!
       expect(OpenTrace.enabled?).to be false
+    end
 
+    it "re-enables logging" do
+      OpenTrace.disable!
       OpenTrace.enable!
       expect(OpenTrace.enabled?).to be true
+    end
+
+    it "actually stops sending logs when disabled" do
+      stub = stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+
+      OpenTrace.disable!
+      OpenTrace.log("INFO", "should not send")
+      sleep 0.3
+
+      expect(stub).not_to have_been_requested
     end
   end
 
@@ -41,7 +101,7 @@ RSpec.describe OpenTrace do
         .to_return(status: 201, body: '{"count":1}')
     end
 
-    it "sends a log payload to the server" do
+    it "sends a log payload with all expected fields" do
       OpenTrace.log("INFO", "test message", { request_id: "req-1" })
       sleep 0.5
 
@@ -59,16 +119,72 @@ RSpec.describe OpenTrace do
       ).to have_been_made
     end
 
-    it "extracts trace_id to top level" do
-      OpenTrace.log("INFO", "traced", { trace_id: "abc-123" })
+    it "generates an ISO 8601 timestamp with microseconds" do
+      OpenTrace.log("INFO", "ts test")
       sleep 0.5
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
             body = JSON.parse(req.body)
-            body["trace_id"] == "abc-123"
+            # Matches: 2026-02-08T12:34:56.123456Z
+            body["timestamp"].match?(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z\z/)
           }
+      ).to have_been_made
+    end
+
+    it "upcases the level string" do
+      OpenTrace.log("info", "lower case level")
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req| JSON.parse(req.body)["level"] == "INFO" }
+      ).to have_been_made
+    end
+
+    it "converts symbol levels" do
+      OpenTrace.log(:warn, "symbol level")
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req| JSON.parse(req.body)["level"] == "WARN" }
+      ).to have_been_made
+    end
+
+    it "converts message to string" do
+      OpenTrace.log("ERROR", 12345)
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req| JSON.parse(req.body)["message"] == "12345" }
+      ).to have_been_made
+    end
+
+    it "extracts trace_id to top level" do
+      OpenTrace.log("INFO", "traced", { trace_id: "abc-123", other: "val" })
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            body = JSON.parse(req.body)
+            body["trace_id"] == "abc-123" &&
+              !body["metadata"].key?("trace_id") &&
+              body["metadata"]["other"] == "val"
+          }
+      ).to have_been_made
+    end
+
+    it "sends empty metadata hash when none provided" do
+      OpenTrace.log("INFO", "no meta")
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req| JSON.parse(req.body)["metadata"] == {} }
       ).to have_been_made
     end
 
@@ -77,7 +193,11 @@ RSpec.describe OpenTrace do
       OpenTrace.log("INFO", "should not send")
       sleep 0.3
 
-      expect(a_request(:post, "https://opentrace.test/api/logs")).not_to have_been_made
+      # Only the safety-net stub should exist, no real request
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req| JSON.parse(req.body)["message"] == "should not send" }
+      ).not_to have_been_made
     end
 
     it "never raises on any error" do
@@ -88,11 +208,61 @@ RSpec.describe OpenTrace do
     it "handles non-hash metadata gracefully" do
       expect { OpenTrace.log("INFO", "test", "not a hash") }.not_to raise_error
     end
+
+    it "handles nil metadata gracefully" do
+      expect { OpenTrace.log("INFO", "test", nil) }.not_to raise_error
+    end
+
+    it "includes complex nested metadata" do
+      metadata = {
+        exception: {
+          class: "RuntimeError",
+          message: "boom",
+          backtrace: ["file.rb:1", "file.rb:2"]
+        },
+        user_id: 42
+      }
+      OpenTrace.log("ERROR", "exception caught", metadata)
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            body = JSON.parse(req.body)
+            body["metadata"]["exception"]["class"] == "RuntimeError" &&
+              body["metadata"]["user_id"] == 42
+          }
+      ).to have_been_made
+    end
   end
 
   describe ".shutdown" do
     it "can be called without error even when unconfigured" do
       expect { OpenTrace.shutdown }.not_to raise_error
+    end
+
+    it "can be called multiple times" do
+      configure_opentrace!
+      expect {
+        OpenTrace.shutdown(timeout: 1)
+        OpenTrace.shutdown(timeout: 1)
+      }.not_to raise_error
+    end
+  end
+
+  describe ".reset!" do
+    it "clears configuration" do
+      configure_opentrace!
+      expect(OpenTrace.enabled?).to be true
+
+      OpenTrace.reset!
+      expect(OpenTrace.enabled?).to be false
+    end
+
+    it "can be called safely multiple times" do
+      expect {
+        3.times { OpenTrace.reset! }
+      }.not_to raise_error
     end
   end
 end
