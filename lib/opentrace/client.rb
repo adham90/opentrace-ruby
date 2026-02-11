@@ -15,10 +15,13 @@ module OpenTrace
       @queue  = Thread::Queue.new
       @mutex  = Mutex.new
       @thread = nil
+      @pid    = Process.pid
     end
 
     def enqueue(payload)
       return unless @config.enabled?
+
+      reset_after_fork! if forked?
 
       # Drop newest if queue is full
       return if @queue.size >= MAX_QUEUE_SIZE
@@ -34,15 +37,34 @@ module OpenTrace
 
     private
 
+    def forked?
+      Process.pid != @pid
+    end
+
+    def reset_after_fork!
+      # After fork, the old thread/queue/mutex from the parent are dead.
+      # Re-create everything cleanly in the child process.
+      @pid    = Process.pid
+      @queue  = Thread::Queue.new
+      @mutex  = Mutex.new
+      @thread = nil
+    end
+
     def ensure_thread_running
       return if @thread&.alive?
 
-      @mutex.synchronize do
+      # Use try_lock so we never block the calling thread.
+      # If another thread is already spawning the dispatch thread, skip —
+      # the next enqueue will see it alive.
+      return unless @mutex.try_lock
+      begin
         return if @thread&.alive?
 
         @thread = Thread.new { dispatch_loop }
         @thread.abort_on_exception = false
         @thread.report_on_exception = false
+      ensure
+        @mutex.unlock
       end
     end
 

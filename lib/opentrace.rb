@@ -90,11 +90,11 @@ module OpenTrace
     end
 
     def current_request_id
-      Thread.current[:opentrace_request_id]
+      Fiber[:opentrace_request_id]
     end
 
     def current_request_id=(id)
-      Thread.current[:opentrace_request_id] = id
+      Fiber[:opentrace_request_id] = id
     end
 
     def shutdown(timeout: 5)
@@ -106,12 +106,23 @@ module OpenTrace
       @config = nil
       @client = nil
       @static_context = nil
+      @at_exit_registered = nil
     end
 
     private
 
     def client
-      @client ||= Client.new(config)
+      @client ||= begin
+        c = Client.new(config)
+        register_at_exit_hook!
+        c
+      end
+    end
+
+    def register_at_exit_hook!
+      return if @at_exit_registered
+      @at_exit_registered = true
+      at_exit { OpenTrace.shutdown(timeout: 2) }
     end
 
     def reset_client!

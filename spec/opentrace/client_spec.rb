@@ -337,6 +337,61 @@ RSpec.describe OpenTrace::Client do
     end
   end
 
+  describe "fork safety" do
+    it "detects a forked process and re-initializes" do
+      stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+
+      # Enqueue one message to start the thread
+      client.enqueue({ level: "INFO", message: "parent" })
+      sleep 0.3
+
+      # Simulate fork by changing the pid
+      old_queue = client.instance_variable_get(:@queue)
+      allow(Process).to receive(:pid).and_return(Process.pid + 1)
+
+      client.enqueue({ level: "INFO", message: "child" })
+      new_queue = client.instance_variable_get(:@queue)
+
+      # Queue should be a new instance after fork detection
+      expect(new_queue).not_to equal(old_queue)
+      expect(client.instance_variable_get(:@pid)).to eq(Process.pid)
+
+      sleep 0.5
+    end
+
+    it "does not re-initialize when pid has not changed" do
+      stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+
+      client.enqueue({ level: "INFO", message: "first" })
+      queue_after_first = client.instance_variable_get(:@queue)
+
+      client.enqueue({ level: "INFO", message: "second" })
+      queue_after_second = client.instance_variable_get(:@queue)
+
+      expect(queue_after_second).to equal(queue_after_first)
+      sleep 0.3
+    end
+  end
+
+  describe "non-blocking enqueue" do
+    it "uses try_lock so enqueue never blocks on mutex" do
+      stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+
+      # Enqueue from multiple threads concurrently — none should hang
+      threads = 10.times.map do |i|
+        Thread.new { client.enqueue({ level: "INFO", message: "thread-#{i}" }) }
+      end
+      threads.each { |t| t.join(5) }
+
+      # Verify no threads timed out (join returned nil means timeout)
+      expect(threads.all?(&:alive?)).to eq(false)
+      sleep 0.5
+    end
+  end
+
   describe "config defaults" do
     it "has batch_size = 50 by default" do
       expect(OpenTrace::Config.new.batch_size).to eq(50)
