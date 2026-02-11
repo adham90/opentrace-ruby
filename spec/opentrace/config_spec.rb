@@ -27,6 +27,10 @@ RSpec.describe OpenTrace::Config do
     it "is enabled by default" do
       expect(config.enabled).to be true
     end
+
+    it "has empty ignore_paths" do
+      expect(config.ignore_paths).to eq([])
+    end
   end
 
   describe "#valid?" do

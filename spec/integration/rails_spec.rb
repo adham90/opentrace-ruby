@@ -415,6 +415,71 @@ RSpec.describe "Rails integration" do
       ).to have_been_made
     end
 
+    it "does not log requests to ignored paths (string match)" do
+      OpenTrace.config.ignore_paths = ["/health", "/up"]
+
+      WebMock.reset!
+      stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+
+      payload = {
+        controller: "HealthController",
+        action: "show",
+        method: "GET",
+        path: "/health",
+        status: 200,
+        headers: nil
+      }
+
+      ActiveSupport::Notifications.instrument("process_action.action_controller", payload) {}
+      sleep 0.3
+
+      expect(a_request(:post, "https://opentrace.test/api/logs")).not_to have_been_made
+    end
+
+    it "does not log requests to ignored paths (regexp match)" do
+      OpenTrace.config.ignore_paths = [%r{\A/assets/}]
+
+      WebMock.reset!
+      stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+
+      payload = {
+        controller: "AssetsController",
+        action: "show",
+        method: "GET",
+        path: "/assets/logo.png",
+        status: 200,
+        headers: nil
+      }
+
+      ActiveSupport::Notifications.instrument("process_action.action_controller", payload) {}
+      sleep 0.3
+
+      expect(a_request(:post, "https://opentrace.test/api/logs")).not_to have_been_made
+    end
+
+    it "still logs requests to non-ignored paths" do
+      OpenTrace.config.ignore_paths = ["/health", "/up"]
+
+      payload = {
+        controller: "UsersController",
+        action: "index",
+        method: "GET",
+        path: "/users",
+        status: 200,
+        headers: nil
+      }
+
+      ActiveSupport::Notifications.instrument("process_action.action_controller", payload) {}
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req| parse_log_body(req)["message"].include?("GET /users 200") }
+      ).to have_been_made
+    end
+
     it "does not log when OpenTrace is disabled" do
       OpenTrace.disable!
 

@@ -8,7 +8,8 @@ module OpenTrace
     attr_accessor :endpoint, :api_key, :service, :environment, :timeout, :enabled,
                   :context, :min_level, :hostname, :pid, :git_sha,
                   :batch_size, :flush_interval,
-                  :sql_logging, :sql_duration_threshold_ms
+                  :sql_logging, :sql_duration_threshold_ms,
+                  :ignore_paths
 
     def initialize
       @endpoint    = nil
@@ -26,6 +27,7 @@ module OpenTrace
       @flush_interval = 5.0
       @sql_logging    = true
       @sql_duration_threshold_ms = 0.0
+      @ignore_paths   = []
     end
 
     def valid?

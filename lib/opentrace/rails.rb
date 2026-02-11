@@ -60,6 +60,7 @@ if defined?(::Rails::Railtie)
           return unless OpenTrace.enabled?
 
           payload = event.payload
+          return if ignored_path?(payload[:path])
           metadata = {
             request_id: payload[:headers]&.env&.dig("action_dispatch.request_id"),
             controller: payload[:controller],
@@ -217,6 +218,14 @@ if defined?(::Rails::Railtie)
             ::Rails.backtrace_cleaner.clean(backtrace)
           else
             backtrace.reject { |line| line.include?("/gems/") }
+          end
+        end
+
+        def ignored_path?(path)
+          return false if path.nil?
+
+          OpenTrace.config.ignore_paths.any? do |entry|
+            entry.is_a?(Regexp) ? entry.match?(path) : path == entry
           end
         end
 
