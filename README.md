@@ -3,7 +3,9 @@
 [![Gem Version](https://badge.fury.io/rb/opentrace.svg)](https://rubygems.org/gems/opentrace)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A thin, safe Ruby client that forwards structured application logs to an [OpenTrace](https://github.com/adham90/opentrace-ruby) server over HTTP.
+A thin, safe Ruby client that forwards structured application logs to an [OpenTrace](https://github.com/adham90/opentrace) server over HTTP.
+
+> **OpenTrace Server** -- This gem requires a running [OpenTrace server](https://github.com/adham90/opentrace). OpenTrace is a self-hosted observability tool for logs, database monitoring, and intelligent alerting. See the [server repo](https://github.com/adham90/opentrace) for setup instructions.
 
 **This gem will never crash or slow down your application.** All network errors are swallowed silently. If the server is unreachable, logs are dropped -- your app continues running normally.
 
