@@ -1,8 +1,29 @@
 # OpenTrace Ruby
 
-A thin, safe Ruby client that forwards structured application logs to an [OpenTrace](https://github.com/opentrace/opentrace) server over HTTP.
+[![Gem Version](https://badge.fury.io/rb/opentrace.svg)](https://rubygems.org/gems/opentrace)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**This gem will never crash or slow down your application.** All network errors are swallowed silently. If the server is unreachable, logs are dropped.
+A thin, safe Ruby client that forwards structured application logs to an [OpenTrace](https://github.com/adham90/opentrace-ruby) server over HTTP.
+
+**This gem will never crash or slow down your application.** All network errors are swallowed silently. If the server is unreachable, logs are dropped -- your app continues running normally.
+
+## Features
+
+- **Zero-risk integration** -- all errors swallowed, never raises to host app
+- **Async dispatch** -- logs are queued in-memory and sent via a background thread
+- **Batch sending** -- groups logs into configurable batches for efficient network usage
+- **Bounded queue** -- caps at 1,000 entries to prevent memory bloat
+- **Smart truncation** -- oversized payloads are truncated instead of silently dropped
+- **Rails integration** -- auto-instruments controllers, SQL queries, and ActiveJob via Railtie
+- **Rack middleware** -- propagates `request_id` via thread-local storage
+- **Logger wrapper** -- drop-in replacement that forwards to OpenTrace while keeping your original logger
+- **Rails 7.1+ BroadcastLogger** -- native support via `broadcast_to`
+- **TaggedLogging** -- preserves `ActiveSupport::TaggedLogging` tags in metadata
+- **Context support** -- attach global metadata to every log via Hash or Proc
+- **Level filtering** -- `min_level` config to control which severities are forwarded
+- **Auto-enrichment** -- every log includes `hostname`, `pid`, and `git_sha` automatically
+- **Exception helper** -- `OpenTrace.error` captures class, message, and cleaned backtrace
+- **Runtime controls** -- enable/disable logging at runtime without restarting
 
 ## Installation
 
@@ -18,24 +39,77 @@ Then run:
 bundle install
 ```
 
+Or install directly:
+
+```bash
+gem install opentrace
+```
+
+## Quick Start
+
+```ruby
+OpenTrace.configure do |c|
+  c.endpoint = "https://opentrace.example.com"
+  c.api_key  = ENV["OPENTRACE_API_KEY"]
+  c.service  = "my-app"
+end
+
+OpenTrace.log("INFO", "User signed in", { user_id: 42 })
+```
+
+That's it. Logs are queued and sent asynchronously -- your code never blocks.
+
 ## Configuration
 
 ```ruby
 OpenTrace.configure do |c|
-  c.endpoint    = "https://opentrace.example.com"   # required
-  c.api_key     = ENV["OPENTRACE_API_KEY"]           # required
-  c.service     = "billing-api"                      # required
-  c.environment = "production"                       # optional
-  c.timeout     = 1.0                                # optional, seconds (default: 1.0)
-  c.enabled     = true                               # optional (default: true)
+  # Required
+  c.endpoint    = "https://opentrace.example.com"
+  c.api_key     = ENV["OPENTRACE_API_KEY"]
+  c.service     = "billing-api"
+
+  # Optional
+  c.environment = "production"           # default: nil
+  c.timeout     = 1.0                    # HTTP timeout in seconds (default: 1.0)
+  c.enabled     = true                   # default: true
+  c.min_level   = :info                  # minimum level to forward (default: :debug)
+  c.batch_size  = 50                     # logs per batch (default: 50)
+  c.flush_interval = 5.0                 # seconds between flushes (default: 5.0)
+
+  # Global context -- attached to every log entry
+  c.context = { deploy_version: "v1.2.3" }
+  # Or use a Proc for dynamic context:
+  c.context = -> { { tenant_id: Current.tenant&.id } }
+
+  # Auto-populated (override if needed)
+  c.hostname = Socket.gethostname        # auto-detected
+  c.pid      = Process.pid               # auto-detected
+  c.git_sha  = ENV["REVISION"]           # checks REVISION, GIT_SHA, HEROKU_SLUG_COMMIT
+
+  # SQL logging (Rails only)
+  c.sql_logging = true                   # default: true
+  c.sql_duration_threshold_ms = 100.0    # only log queries slower than this (default: 0.0 = all)
 end
 ```
 
 If any required field (`endpoint`, `api_key`, `service`) is missing or empty, the gem **disables itself automatically**. No errors, no logs sent.
 
+### Level Filtering
+
+Control which log levels are forwarded with `min_level`:
+
+```ruby
+OpenTrace.configure do |c|
+  # ...
+  c.min_level = :warn  # only forward WARN, ERROR, and FATAL
+end
+```
+
+Available levels: `:debug`, `:info`, `:warn`, `:error`, `:fatal`
+
 ## Usage
 
-### Direct logging
+### Direct Logging
 
 ```ruby
 OpenTrace.log("INFO", "User signed in", { user_id: 42, ip: "1.2.3.4" })
@@ -52,7 +126,24 @@ OpenTrace.log("ERROR", "Payment failed", {
 
 Pass `trace_id` inside metadata and it will be promoted to a top-level field automatically.
 
-### Logger wrapper
+### Exception Logging
+
+Use `OpenTrace.error` to log exceptions with automatic class, message, and backtrace extraction:
+
+```ruby
+begin
+  dangerous_operation
+rescue => e
+  OpenTrace.error(e, { user_id: current_user.id, action: "checkout" })
+end
+```
+
+This captures:
+- `exception_class` -- the exception class name
+- `exception_message` -- truncated to 500 characters
+- `backtrace` -- cleaned (Rails backtrace cleaner or gem-filtered), limited to 15 frames
+
+### Logger Wrapper
 
 Wrap any Ruby `Logger` to forward all log output to OpenTrace while keeping the original logger working exactly as before:
 
@@ -66,13 +157,35 @@ logger.info("This goes to STDOUT and to OpenTrace")
 logger.error("So does this")
 ```
 
-You can attach default metadata to every log from this logger:
+Attach default metadata to every log from this logger:
 
 ```ruby
 logger = OpenTrace::Logger.new(original_logger, metadata: { component: "worker" })
+logger.info("Processing job")
+# metadata: { component: "worker" }
 ```
 
-### Rails
+### Global Context
+
+Attach metadata to **every** log entry using `config.context`:
+
+```ruby
+# Static context
+OpenTrace.configure do |c|
+  # ...
+  c.context = { deploy_version: "v1.2.3", region: "us-east-1" }
+end
+
+# Dynamic context (evaluated on each log call)
+OpenTrace.configure do |c|
+  # ...
+  c.context = -> { { request_id: Thread.current[:request_id], tenant: Current.tenant&.slug } }
+end
+```
+
+Context has the lowest priority -- caller-provided metadata overrides context values.
+
+## Rails Integration
 
 In a Rails app, add an initializer:
 
@@ -86,29 +199,97 @@ OpenTrace.configure do |c|
 end
 ```
 
-The gem auto-detects Rails and will:
+The gem auto-detects Rails and provides the following integrations automatically:
 
-- Wrap `Rails.logger` so all log output is forwarded to OpenTrace
-- Subscribe to `process_action.action_controller` notifications to capture:
-  - `request_id`
-  - `controller` and `action`
-  - `method`, `path`, `status`, `duration_ms`
-  - `user_id` (if your controller responds to `current_user`)
+### Rack Middleware
 
-Requests that return 5xx status codes are logged as `ERROR`, everything else as `INFO`.
+Automatically inserted into the middleware stack. Captures `request_id` from `action_dispatch.request_id` or `HTTP_X_REQUEST_ID` and makes it available via `OpenTrace.current_request_id`. All logs within a request automatically include the `request_id`.
+
+### Logger Wrapping
+
+- **Rails 7.1+**: Uses `BroadcastLogger#broadcast_to` to register as a broadcast target (non-invasive)
+- **Pre-7.1**: Wraps `Rails.logger` with `OpenTrace::Logger` which delegates to the original and forwards to OpenTrace
+
+All your existing `Rails.logger.info(...)` calls automatically get forwarded to OpenTrace.
+
+### Controller Subscriber
+
+Subscribes to `process_action.action_controller` and captures:
+
+| Field | Description |
+|---|---|
+| `request_id` | From ActionDispatch |
+| `controller` | Controller class name |
+| `action` | Action name |
+| `method` | HTTP method (GET, POST, etc.) |
+| `path` | Request path |
+| `status` | HTTP response status code |
+| `duration_ms` | Request duration in milliseconds |
+| `user_id` | Auto-captured if controller responds to `current_user` |
+| `params` | Filtered request parameters (respects `filter_parameters`) |
+| `exception_class` | Exception class (if raised) |
+| `exception_message` | Exception message (if raised) |
+| `backtrace` | Cleaned backtrace (if exception raised) |
+
+Log levels are set automatically:
+- **ERROR** -- exceptions or 5xx status
+- **WARN** -- 4xx status
+- **INFO** -- everything else
+
+### SQL Query Subscriber
+
+Subscribes to `sql.active_record` and logs every query with:
+
+| Field | Description |
+|---|---|
+| `sql_name` | Query name (e.g., "User Load") |
+| `sql` | Query text (truncated to 1000 chars) |
+| `sql_duration_ms` | Query duration in milliseconds |
+| `sql_cached` | Whether the result was cached |
+| `sql_table` | Extracted table name for filtering |
+
+SCHEMA queries (migrations, structure dumps) are automatically skipped. Queries over 1 second are logged as `WARN`, all others as `DEBUG`.
+
+Configure SQL logging:
+
+```ruby
+OpenTrace.configure do |c|
+  # ...
+  c.sql_logging = true                  # enable/disable (default: true)
+  c.sql_duration_threshold_ms = 100.0   # only log slow queries (default: 0.0 = all)
+end
+```
+
+### ActiveJob Subscriber
+
+Subscribes to `perform.active_job` and logs every job execution with:
+
+| Field | Description |
+|---|---|
+| `job_class` | Job class name |
+| `job_id` | Unique job ID |
+| `queue_name` | Queue the job ran on |
+| `executions` | Attempt number |
+| `duration_ms` | Execution duration |
+| `job_arguments` | Serialized arguments (truncated to 512 bytes) |
+| `exception_class` | Exception class (if failed) |
+| `exception_message` | Exception message (if failed) |
+| `backtrace` | Cleaned backtrace (if failed) |
+
+Failed jobs are logged as `ERROR`, successful jobs as `INFO`.
 
 ### TaggedLogging
 
 If your wrapped logger uses `ActiveSupport::TaggedLogging`, tags are preserved and injected into the metadata:
 
 ```ruby
-Rails.logger.tagged("RequestID-123") do
+Rails.logger.tagged("RequestID-123", "UserID-42") do
   Rails.logger.info("Processing request")
-  # metadata will include: { tags: ["RequestID-123"] }
+  # metadata: { tags: ["RequestID-123", "UserID-42"] }
 end
 ```
 
-## Runtime controls
+## Runtime Controls
 
 ```ruby
 OpenTrace.enabled?  # check if logging is active
@@ -116,7 +297,7 @@ OpenTrace.disable!  # turn off (logs are silently dropped)
 OpenTrace.enable!   # turn back on
 ```
 
-## Graceful shutdown
+## Graceful Shutdown
 
 If your app needs a clean shutdown (e.g. a Sidekiq worker), drain the queue before exiting:
 
@@ -126,19 +307,24 @@ OpenTrace.shutdown(timeout: 5)
 
 This gives the background thread up to 5 seconds to send any remaining queued logs.
 
-## How it works
+## How It Works
+
+```
+Your App --log()--> [In-Memory Queue] --background thread--> POST /api/logs --> OpenTrace Server
+```
 
 - Logs are serialized to JSON and pushed onto an in-memory queue
-- A single background thread reads from the queue and sends each payload via `POST /api/logs`
+- A single background thread reads from the queue and sends batches via `POST /api/logs`
 - The thread is started lazily on the first log call -- no threads are created at boot
 - If the queue exceeds 1,000 items, new logs are dropped (oldest are preserved)
-- Payloads larger than 32 KB are dropped
+- Payloads exceeding 32 KB are intelligently truncated (backtrace, params, SQL removed first)
+- If still too large after truncation, the payload is split and retried in smaller batches
 - All network errors (timeouts, connection refused, DNS failures) are swallowed silently
 - The HTTP timeout defaults to 1 second
 
-## Log payload format
+## Log Payload Format
 
-Each log is sent as a JSON object:
+Each log is sent as a JSON object to `POST /api/logs`:
 
 ```json
 {
@@ -150,26 +336,31 @@ Each log is sent as a JSON object:
   "message": "PG::UniqueViolation",
   "metadata": {
     "user_id": 42,
-    "request_id": "req-456"
+    "request_id": "req-456",
+    "hostname": "web-01",
+    "pid": 12345,
+    "git_sha": "a1b2c3d"
   }
 }
 ```
 
-| Field         | Type   | Required |
-|---------------|--------|----------|
-| `timestamp`   | string | yes      |
-| `level`       | string | yes      |
-| `message`     | string | yes      |
-| `service`     | string | no       |
-| `environment` | string | no       |
-| `trace_id`    | string | no       |
-| `metadata`    | object | no       |
+| Field | Type | Required |
+|---|---|---|
+| `timestamp` | string (ISO 8601) | yes |
+| `level` | string | yes |
+| `message` | string | yes |
+| `service` | string | no |
+| `environment` | string | no |
+| `trace_id` | string | no |
+| `metadata` | object | no |
+
+The server accepts a single JSON object or an array of objects.
 
 ## Requirements
 
-- Ruby 3.0+
-- Rails 6+ (optional, auto-detected)
+- Ruby >= 3.0
+- Rails >= 6 (optional, auto-detected)
 
 ## License
 
-MIT
+[MIT](LICENSE)
