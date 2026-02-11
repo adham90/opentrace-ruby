@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-02-11
+
+### Fixed
+
+- **CPU busy-loop fix**: `drain_queue` would spin without sleeping when the queue was idle and the flush deadline expired with an empty batch. With Falcon or any multi-worker server, this caused ~100% CPU per worker.
+
 ## [0.2.0] - 2026-02-11
 
 ### Added
@@ -35,5 +41,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix for frozen middleware stack crash on Rails 7.1+
 - MIT License
 
+[0.2.1]: https://github.com/adham90/opentrace-ruby/releases/tag/v0.2.1
 [0.2.0]: https://github.com/adham90/opentrace-ruby/releases/tag/v0.2.0
 [0.1.0]: https://github.com/adham90/opentrace-ruby/releases/tag/v0.1.0
