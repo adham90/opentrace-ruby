@@ -14,8 +14,11 @@ A thin, safe Ruby client that forwards structured application logs to an [OpenTr
 - **Batch sending** -- groups logs into configurable batches for efficient network usage
 - **Bounded queue** -- caps at 1,000 entries to prevent memory bloat
 - **Smart truncation** -- oversized payloads are truncated instead of silently dropped
+- **Works with any server** -- Puma (threads), Unicorn (forks), Passenger, and Falcon (fibers)
+- **Fork safe** -- detects forked worker processes and re-initializes cleanly
+- **Fiber safe** -- uses `Fiber[]` storage for correct request isolation in fiber-based servers
 - **Rails integration** -- auto-instruments controllers, SQL queries, and ActiveJob via Railtie
-- **Rack middleware** -- propagates `request_id` via thread-local storage
+- **Rack middleware** -- propagates `request_id` via fiber-local storage
 - **Logger wrapper** -- drop-in replacement that forwards to OpenTrace while keeping your original logger
 - **Rails 7.1+ BroadcastLogger** -- native support via `broadcast_to`
 - **TaggedLogging** -- preserves `ActiveSupport::TaggedLogging` tags in metadata
@@ -24,6 +27,7 @@ A thin, safe Ruby client that forwards structured application logs to an [OpenTr
 - **Auto-enrichment** -- every log includes `hostname`, `pid`, and `git_sha` automatically
 - **Exception helper** -- `OpenTrace.error` captures class, message, and cleaned backtrace
 - **Runtime controls** -- enable/disable logging at runtime without restarting
+- **Graceful shutdown** -- pending logs are flushed automatically on process exit
 
 ## Installation
 
@@ -179,7 +183,7 @@ end
 # Dynamic context (evaluated on each log call)
 OpenTrace.configure do |c|
   # ...
-  c.context = -> { { request_id: Thread.current[:request_id], tenant: Current.tenant&.slug } }
+  c.context = -> { { tenant: Current.tenant&.slug } }
 end
 ```
 
@@ -204,6 +208,8 @@ The gem auto-detects Rails and provides the following integrations automatically
 ### Rack Middleware
 
 Automatically inserted into the middleware stack. Captures `request_id` from `action_dispatch.request_id` or `HTTP_X_REQUEST_ID` and makes it available via `OpenTrace.current_request_id`. All logs within a request automatically include the `request_id`.
+
+Request IDs are stored using `Fiber[]` (fiber-local storage), which works correctly in both threaded servers (Puma) and fiber-based servers (Falcon).
 
 ### Logger Wrapping
 
@@ -299,13 +305,30 @@ OpenTrace.enable!   # turn back on
 
 ## Graceful Shutdown
 
-If your app needs a clean shutdown (e.g. a Sidekiq worker), drain the queue before exiting:
+An `at_exit` hook is registered automatically to flush pending logs (up to 2 seconds) when the process exits. No configuration needed.
+
+For manual control (e.g. a Sidekiq worker), you can drain the queue explicitly:
 
 ```ruby
 OpenTrace.shutdown(timeout: 5)
 ```
 
 This gives the background thread up to 5 seconds to send any remaining queued logs.
+
+## Server Compatibility
+
+OpenTrace works with any Rack-compatible Ruby web server:
+
+| Server | Concurrency | Support |
+|---|---|---|
+| **Puma** | Threads | Full support |
+| **Unicorn** | Forked workers | Full support (fork-safe) |
+| **Passenger** | Forks + threads | Full support (fork-safe) |
+| **Falcon** | Fibers | Full support (fiber-safe) |
+
+**Fork safety**: When a process forks (Puma cluster mode, Unicorn, Passenger), the background dispatch thread from the parent is dead in the child. OpenTrace detects the fork via PID check and cleanly re-initializes the queue, mutex, and thread.
+
+**Fiber safety**: Request IDs use `Fiber[]` storage instead of `Thread.current`, so concurrent requests on the same thread (as in Falcon) are correctly isolated.
 
 ## How It Works
 
@@ -315,12 +338,14 @@ Your App --log()--> [In-Memory Queue] --background thread--> POST /api/logs --> 
 
 - Logs are serialized to JSON and pushed onto an in-memory queue
 - A single background thread reads from the queue and sends batches via `POST /api/logs`
+- `enqueue` is non-blocking -- it uses `try_lock` so it never waits on a mutex
 - The thread is started lazily on the first log call -- no threads are created at boot
 - If the queue exceeds 1,000 items, new logs are dropped (oldest are preserved)
 - Payloads exceeding 32 KB are intelligently truncated (backtrace, params, SQL removed first)
 - If still too large after truncation, the payload is split and retried in smaller batches
 - All network errors (timeouts, connection refused, DNS failures) are swallowed silently
 - The HTTP timeout defaults to 1 second
+- Pending logs are flushed on process exit via an `at_exit` hook
 
 ## Log Payload Format
 
@@ -358,7 +383,7 @@ The server accepts a single JSON object or an array of objects.
 
 ## Requirements
 
-- Ruby >= 3.0
+- Ruby >= 3.2 (uses `Fiber[]` for fiber-local storage)
 - Rails >= 6 (optional, auto-detected)
 
 ## License

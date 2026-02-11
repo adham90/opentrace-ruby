@@ -14,7 +14,7 @@ Gem::Specification.new do |spec|
   spec.homepage      = "https://github.com/adham90/opentrace-ruby"
   spec.license       = "MIT"
 
-  spec.required_ruby_version = ">= 3.0.0"
+  spec.required_ruby_version = ">= 3.2.0"
 
   spec.files         = Dir["lib/**/*.rb", "LICENSE", "README.md"]
   spec.require_paths = ["lib"]
