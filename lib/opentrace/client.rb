@@ -105,7 +105,7 @@ module OpenTrace
         end
 
         break if batch.size >= @config.batch_size
-        break if Time.now >= deadline && !batch.empty?
+        break if Time.now >= deadline
         break if @queue.closed?
       end
 
