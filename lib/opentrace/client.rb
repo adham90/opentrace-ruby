@@ -16,6 +16,10 @@ module OpenTrace
       @mutex  = Mutex.new
       @thread = nil
       @pid    = Process.pid
+      @circuit_breaker = CircuitBreaker.new(
+        failure_threshold: config.circuit_breaker_threshold,
+        recovery_timeout: config.circuit_breaker_timeout
+      )
     end
 
     def enqueue(payload)
@@ -48,6 +52,7 @@ module OpenTrace
       @queue  = Thread::Queue.new
       @mutex  = Mutex.new
       @thread = nil
+      @circuit_breaker.reset!
     end
 
     def ensure_thread_running
@@ -69,14 +74,14 @@ module OpenTrace
     end
 
     def dispatch_loop
-      uri = URI.join(@config.endpoint.chomp("/") + "/", "api/logs")
+      @uri = URI.join(@config.endpoint.chomp("/") + "/", "api/logs")
 
       loop do
         batch = drain_queue
         break if batch.nil?
         next if batch.empty?
 
-        send_batch(uri, batch)
+        send_batch(batch)
       end
     rescue Exception # rubocop:disable Lint/RescueException
       # Swallow all errors including thread kill
@@ -126,7 +131,12 @@ module OpenTrace
       nil
     end
 
-    def send_batch(uri, batch)
+    def send_batch(batch)
+      # Circuit breaker: skip if server is known-down
+      unless @circuit_breaker.allow_request?
+        return
+      end
+
       # Disable HTTP tracking for our own calls to prevent infinite recursion
       Fiber[:opentrace_http_tracking_disabled] = true
 
@@ -139,23 +149,72 @@ module OpenTrace
       # If entire batch exceeds limit, split and retry
       if json.bytesize > PAYLOAD_MAX_BYTES
         mid = batch.size / 2
-        send_batch(uri, batch[0...mid]) if mid > 0
-        send_batch(uri, batch[mid..]) if mid < batch.size
+        send_batch(batch[0...mid]) if mid > 0
+        send_batch(batch[mid..]) if mid < batch.size
         return
       end
 
-      http = build_http(uri)
-      request = Net::HTTP::Post.new(uri.request_uri)
+      response = send_with_retry(json)
+
+      if response && response.is_a?(Net::HTTPSuccess)
+        @circuit_breaker.record_success
+      else
+        @circuit_breaker.record_failure
+      end
+    rescue StandardError
+      @circuit_breaker.record_failure
+    ensure
+      Fiber[:opentrace_http_tracking_disabled] = nil
+    end
+
+    def send_with_retry(json)
+      attempts = 0
+      max_attempts = @config.max_retries + 1
+
+      loop do
+        attempts += 1
+
+        begin
+          response = http_post(json)
+
+          return response if response.is_a?(Net::HTTPSuccess)
+          return response unless retryable_response?(response)
+        rescue StandardError
+          # Network errors are retryable
+          raise if attempts >= max_attempts
+          sleep(calculate_backoff(attempts))
+          next
+        end
+
+        break if attempts >= max_attempts
+
+        sleep(calculate_backoff(attempts))
+      end
+
+      response
+    end
+
+    def http_post(json)
+      http = build_http(@uri)
+      request = Net::HTTP::Post.new(@uri.request_uri)
       request["Authorization"] = "Bearer #{@config.api_key}"
       request["Content-Type"]  = "application/json"
       request["User-Agent"]    = "opentrace-ruby/#{OpenTrace::VERSION}"
       request.body = json
 
       http.request(request)
-    rescue StandardError
-      # Swallow all network errors silently
-    ensure
-      Fiber[:opentrace_http_tracking_disabled] = nil
+    end
+
+    def retryable_response?(response)
+      code = response.code.to_i
+      code >= 500 || code == 429
+    end
+
+    def calculate_backoff(attempt)
+      base = @config.retry_base_delay * (2**(attempt - 1))
+      delay = [base, @config.retry_max_delay].min
+      jitter = delay * rand(0.0..0.25)
+      delay + jitter
     end
 
     def build_http(uri)
