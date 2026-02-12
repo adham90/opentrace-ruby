@@ -684,6 +684,20 @@ Reasons: `:queue_full`, `:circuit_open`, `:auth_suspended`, `:error`
 
 The callback is called synchronously but **exceptions are always swallowed** -- a broken callback will never affect the client.
 
+### Gzip Compression
+
+Outgoing batches are automatically gzip-compressed when they exceed the compression threshold (default: 1KB). This typically achieves 70-85% bandwidth reduction for log payloads with repetitive keys and values.
+
+```ruby
+OpenTrace.configure do |c|
+  # ...
+  c.compression = true       # enable gzip compression (default: true)
+  c.compression_threshold = 1024  # only compress payloads > 1KB (default: 1024)
+end
+```
+
+Compression uses `Zlib::BEST_SPEED` (level 1) for minimal CPU overhead (~0.14ms per batch). The server must support `Content-Encoding: gzip` on request bodies. OpenTrace server v0.6+ includes transparent decompression middleware.
+
 ### Request Summary Architecture
 
 When `request_summary` is enabled, events within a request are **accumulated** in a Fiber-local `RequestCollector` instead of being pushed to the queue individually:

@@ -3,6 +3,8 @@
 require "net/http"
 require "uri"
 require "json"
+require "zlib"
+require "stringio"
 
 module OpenTrace
   class Client
@@ -320,7 +322,13 @@ module OpenTrace
       request["Authorization"] = "Bearer #{@config.api_key}"
       request["Content-Type"]  = "application/json"
       request["User-Agent"]    = "opentrace-ruby/#{OpenTrace::VERSION}"
-      request.body = json
+
+      if @config.compression && json.bytesize > @config.compression_threshold
+        request.body = gzip_compress(json)
+        request["Content-Encoding"] = "gzip"
+      else
+        request.body = json
+      end
 
       http.request(request)
     end
@@ -343,6 +351,15 @@ module OpenTrace
       http.read_timeout = @config.timeout
       http.write_timeout = @config.timeout
       http
+    end
+
+    def gzip_compress(string)
+      io = StringIO.new
+      io.set_encoding("BINARY")
+      gz = Zlib::GzipWriter.new(io, Zlib::BEST_SPEED)
+      gz.write(string)
+      gz.close
+      io.string
     end
 
     def fire_on_drop(count, reason)
