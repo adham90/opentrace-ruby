@@ -13,6 +13,7 @@ module OpenTrace
     PAYLOAD_MAX_BYTES = 32_768 # 32 KB
     POLL_INTERVAL = 0.05 # 50ms
     MAX_RATE_LIMIT_BACKOFF = 60 # Cap Retry-After at 60 seconds
+    API_VERSION = 1
 
     attr_reader :stats
 
@@ -30,6 +31,8 @@ module OpenTrace
       @auth_suspended = false
       @auth_failure_warned = false
       @stats = Stats.new
+      @compatibility_checked = false
+      @server_capabilities = nil
     end
 
     def enqueue(payload)
@@ -71,8 +74,13 @@ module OpenTrace
       @stats.to_h.merge(
         queue_size: queue_size,
         circuit_state: circuit_state,
-        auth_suspended: @auth_suspended
+        auth_suspended: @auth_suspended,
+        server_capabilities: @server_capabilities
       )
+    end
+
+    def supports?(capability)
+      @server_capabilities&.include?(capability.to_s)
     end
 
     def shutdown(timeout: 5)
@@ -98,6 +106,8 @@ module OpenTrace
       @auth_suspended = false
       @auth_failure_warned = false
       @stats = Stats.new
+      @compatibility_checked = false
+      @server_capabilities = nil
     end
 
     def ensure_thread_running
@@ -120,6 +130,7 @@ module OpenTrace
 
     def dispatch_loop
       @uri = URI.join(@config.endpoint.chomp("/") + "/", "api/logs")
+      check_server_compatibility
 
       loop do
         wait_for_rate_limit if rate_limited?
@@ -324,6 +335,7 @@ module OpenTrace
       request["Authorization"] = "Bearer #{@config.api_key}"
       request["Content-Type"]  = "application/json"
       request["User-Agent"]    = "opentrace-ruby/#{OpenTrace::VERSION}"
+      request["X-API-Version"] = API_VERSION.to_s
       request["X-Batch-ID"]    = batch_id if batch_id
 
       if @config.compression && json.bytesize > @config.compression_threshold
@@ -381,6 +393,45 @@ module OpenTrace
       payload
     rescue StandardError
       nil
+    end
+
+    def check_server_compatibility
+      return if @compatibility_checked
+
+      uri = URI.join(@config.endpoint.chomp("/") + "/", "api/version")
+      response = http_get(uri)
+
+      if response.is_a?(Net::HTTPSuccess)
+        info = JSON.parse(response.body)
+        server_api_version = info["api_version"]
+        min_client_version = info["min_client_api_version"]
+
+        if min_client_version && API_VERSION < min_client_version
+          warn "[OpenTrace] Server requires API version >= #{min_client_version}, " \
+               "but this client supports version #{API_VERSION}. " \
+               "Please upgrade the opentrace gem. Log forwarding may not work correctly."
+        end
+
+        if server_api_version && server_api_version < API_VERSION
+          warn "[OpenTrace] Server API version (#{server_api_version}) is older than " \
+               "client (#{API_VERSION}). Some features may not be available."
+        end
+
+        @server_capabilities = info.fetch("capabilities", [])
+      end
+
+      @compatibility_checked = true
+    rescue StandardError
+      # Server might not support /api/version yet — that's fine
+      @compatibility_checked = true
+    end
+
+    def http_get(uri)
+      http = build_http(uri)
+      request = Net::HTTP::Get.new(uri.request_uri)
+      request["User-Agent"] = "opentrace-ruby/#{OpenTrace::VERSION}"
+      request["Authorization"] = "Bearer #{@config.api_key}"
+      http.request(request)
     end
 
     def truncate_payload(payload)

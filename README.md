@@ -39,6 +39,7 @@ A thin, safe Ruby client that forwards structured application logs to an [OpenTr
 - **Job queue depth** -- monitors Sidekiq, GoodJob, or SolidQueue queue sizes (opt-in)
 - **Memory delta tracking** -- snapshots process RSS before/after each request (opt-in)
 - **External HTTP tracking** -- captures outbound Net::HTTP calls with timing (opt-in)
+- **Version negotiation** -- startup compatibility check with capability-based feature detection
 
 ## Installation
 
@@ -697,6 +698,26 @@ end
 ```
 
 Compression uses `Zlib::BEST_SPEED` (level 1) for minimal CPU overhead (~0.14ms per batch). The server must support `Content-Encoding: gzip` on request bodies. OpenTrace server v0.6+ includes transparent decompression middleware.
+
+### Version Negotiation
+
+On the first dispatch cycle, the client makes a lightweight `GET /api/version` call to discover the server's API version and capabilities. This runs once per process (or after fork) and never blocks `enqueue`.
+
+```ruby
+# Check server capabilities programmatically
+client = OpenTrace.send(:client)
+client.supports?(:request_summaries)  # true if server advertises it
+client.supports?(:gzip_request)       # true if server supports gzip
+```
+
+If the server requires a newer client API version, a warning is printed to STDERR:
+
+```
+[OpenTrace] Server requires API version >= 2, but this client supports version 1.
+Please upgrade the opentrace gem. Log forwarding may not work correctly.
+```
+
+Every request includes an `X-API-Version: 1` header so the server can reject incompatible clients with a clear error. Old servers without `/api/version` are handled gracefully — the check silently skips and all features remain enabled.
 
 ### Request Summary Architecture
 
