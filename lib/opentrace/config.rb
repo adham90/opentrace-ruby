@@ -77,5 +77,20 @@ module OpenTrace
         (LEVELS[level.to_s.downcase.to_sym] || 0) >= min_level_value
       end
     end
+
+    # Maps OpenTrace min_level to Ruby Logger severity constant.
+    # Used by LogForwarder to set its level so BroadcastLogger
+    # doesn't downgrade the effective log level for the entire app.
+    LEVEL_TO_LOGGER_SEVERITY = {
+      debug: 0, # ::Logger::DEBUG
+      info:  1, # ::Logger::INFO
+      warn:  2, # ::Logger::WARN
+      error: 3, # ::Logger::ERROR
+      fatal: 4  # ::Logger::FATAL
+    }.freeze
+
+    def logger_severity
+      LEVEL_TO_LOGGER_SEVERITY[min_level.to_s.downcase.to_sym] || 0
+    end
   end
 end

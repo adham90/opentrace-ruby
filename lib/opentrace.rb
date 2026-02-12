@@ -24,37 +24,49 @@ module OpenTrace
       @config ||= Config.new
     end
 
-    def log(level, message, metadata = {})
+    def log(level, message, metadata = {}, request_summary: nil)
       return unless enabled?
       return unless level_meets_threshold?(level)
 
-      # 1. Start with user-defined context (lowest priority)
-      meta = resolve_context
+      # Re-entrance guard: prevent recursive logging if the context proc
+      # or any subscriber triggers another log call (e.g. via ActiveRecord)
+      return if Fiber[:opentrace_logging]
+      Fiber[:opentrace_logging] = true
 
-      # 2. Merge caller-provided metadata (overrides context)
-      meta.merge!(metadata) if metadata.is_a?(Hash)
+      begin
+        # 1. Start with user-defined context (lowest priority)
+        #    Cached per-request to avoid repeated expensive evaluations
+        #    (e.g. Browser.new for UA parsing, DB queries, etc.)
+        meta = resolve_context
 
-      # 3. Static context — only fills in keys not already set
-      static_context.each { |k, v| meta[k] ||= v }
+        # 2. Merge caller-provided metadata (overrides context)
+        meta.merge!(metadata) if metadata.is_a?(Hash)
 
-      # 4. Request ID from middleware (if not already set by caller or context)
-      meta[:request_id] ||= current_request_id if current_request_id
+        # 3. Static context — only fills in keys not already set
+        static_context.each { |k, v| meta[k] ||= v }
 
-      # Extract trace_id to top level before building payload
-      trace_id = meta.delete(:trace_id)
+        # 4. Request ID from middleware (if not already set by caller or context)
+        meta[:request_id] ||= current_request_id if current_request_id
 
-      payload = {
-        timestamp: Time.now.utc.strftime("%Y-%m-%dT%H:%M:%S.%6NZ"),
-        level: level.to_s.upcase,
-        service: config.service,
-        environment: config.environment,
-        message: message.to_s,
-        metadata: meta.compact
-      }
+        # Extract trace_id to top level before building payload
+        trace_id = meta.delete(:trace_id)
 
-      payload[:trace_id] = trace_id.to_s if trace_id
+        payload = {
+          timestamp: Time.now.utc.strftime("%Y-%m-%dT%H:%M:%S.%6NZ"),
+          level: level.to_s.upcase,
+          service: config.service,
+          environment: config.environment,
+          message: message.to_s,
+          metadata: meta.compact
+        }
 
-      client.enqueue(payload)
+        payload[:trace_id] = trace_id.to_s if trace_id
+        payload[:request_summary] = request_summary if request_summary
+
+        client.enqueue(payload)
+      ensure
+        Fiber[:opentrace_logging] = nil
+      end
     rescue StandardError
       # Never raise to the host app
     end
@@ -83,26 +95,32 @@ module OpenTrace
 
     def event(event_type, message, metadata = {})
       return unless enabled?
+      return if Fiber[:opentrace_logging]
+      Fiber[:opentrace_logging] = true
 
-      meta = resolve_context
-      meta.merge!(metadata) if metadata.is_a?(Hash)
-      static_context.each { |k, v| meta[k] ||= v }
-      meta[:request_id] ||= current_request_id if current_request_id
+      begin
+        meta = resolve_context
+        meta.merge!(metadata) if metadata.is_a?(Hash)
+        static_context.each { |k, v| meta[k] ||= v }
+        meta[:request_id] ||= current_request_id if current_request_id
 
-      trace_id = meta.delete(:trace_id)
+        trace_id = meta.delete(:trace_id)
 
-      payload = {
-        timestamp: Time.now.utc.strftime("%Y-%m-%dT%H:%M:%S.%6NZ"),
-        level: "INFO",
-        event_type: event_type.to_s,
-        service: config.service,
-        environment: config.environment,
-        message: message.to_s,
-        metadata: meta.compact
-      }
-      payload[:trace_id] = trace_id.to_s if trace_id
+        payload = {
+          timestamp: Time.now.utc.strftime("%Y-%m-%dT%H:%M:%S.%6NZ"),
+          level: "INFO",
+          event_type: event_type.to_s,
+          service: config.service,
+          environment: config.environment,
+          message: message.to_s,
+          metadata: meta.compact
+        }
+        payload[:trace_id] = trace_id.to_s if trace_id
 
-      client.enqueue(payload)
+        client.enqueue(payload)
+      ensure
+        Fiber[:opentrace_logging] = nil
+      end
     rescue StandardError
       # Never raise to the host app
     end
@@ -201,11 +219,25 @@ module OpenTrace
     end
 
     def resolve_context
+      # Cache context per-request when inside middleware (Fiber-local).
+      # The context proc may do expensive work (DB queries, UA parsing,
+      # object allocations) that should only happen once per request.
+      cached = Fiber[:opentrace_cached_context]
+      return cached.dup if cached
+
       ctx = case config.context
             when Proc then config.context.call
             when Hash then config.context
             end
-      ctx.is_a?(Hash) ? ctx.dup : {}
+      result = ctx.is_a?(Hash) ? ctx : {}
+
+      # Only cache when inside a request (middleware sets request_id)
+      if Fiber[:opentrace_request_id]
+        Fiber[:opentrace_cached_context] = result.freeze
+        return result.dup
+      end
+
+      result.dup
     rescue StandardError
       {} # Broken proc? Swallow, never crash.
     end

@@ -114,8 +114,48 @@ RSpec.describe OpenTrace::LogForwarder do
   end
 
   describe "level defaults" do
-    it "defaults to DEBUG level" do
+    it "matches OpenTrace min_level (defaults to :debug)" do
       expect(forwarder.level).to eq(::Logger::DEBUG)
+    end
+
+    it "uses INFO level when OpenTrace min_level is :info" do
+      OpenTrace.reset!
+      configure_opentrace!(min_level: :info)
+      f = described_class.new
+      expect(f.level).to eq(::Logger::INFO)
+    end
+
+    it "uses WARN level when OpenTrace min_level is :warn" do
+      OpenTrace.reset!
+      configure_opentrace!(min_level: :warn)
+      f = described_class.new
+      expect(f.level).to eq(::Logger::WARN)
+    end
+
+    it "filters DEBUG messages when min_level is :info" do
+      OpenTrace.reset!
+      configure_opentrace!(min_level: :info)
+      f = described_class.new
+
+      WebMock.reset!
+      stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+
+      f.add(::Logger::DEBUG, "should be filtered by forwarder level")
+      sleep 0.5
+
+      expect(a_request(:post, "https://opentrace.test/api/logs")).not_to have_been_made
+    end
+
+    it "does not evaluate lazy blocks for filtered levels" do
+      OpenTrace.reset!
+      configure_opentrace!(min_level: :info)
+      f = described_class.new
+
+      block_evaluated = false
+      f.add(::Logger::DEBUG) { block_evaluated = true; "expensive" }
+
+      expect(block_evaluated).to be false
     end
   end
 end

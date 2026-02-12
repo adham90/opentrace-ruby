@@ -19,11 +19,17 @@ RSpec.describe "Request summary with RequestCollector" do
     OpenTrace::Railtie.config.after_initialize_blocks.each { |block| block.call(app) }
   end
 
-  # Find the controller request log (not individual SQL/view logs) from any batch
+  # Find the controller request log (not individual SQL/view logs) from any batch.
+  # With Plan 6, controller may be in request_summary (when collector is active)
+  # or in metadata (fallback without collector).
   def find_request_log(req)
-    logs = JSON.parse(req.body)
+    json = decompress_body(req.body)
+    logs = JSON.parse(json)
     logs = [logs] unless logs.is_a?(Array)
-    logs.find { |l| l["metadata"]&.key?("controller") }
+    logs.find { |l|
+      l["request_summary"]&.key?("controller") ||
+        l["metadata"]&.key?("controller")
+    }
   end
 
   def simulate_request_with_collector(controller: "OrdersController", action: "show", status: 200, &block)
@@ -41,7 +47,7 @@ RSpec.describe "Request summary with RequestCollector" do
       "action_dispatch.request_id" => "req-summary-test"
     })
 
-    # Fire the controller notification
+    # Fire the controller notification (sleep ensures non-zero duration for time_breakdown)
     ActiveSupport::Notifications.instrument("process_action.action_controller", {
       controller: controller,
       action: action,
@@ -49,9 +55,10 @@ RSpec.describe "Request summary with RequestCollector" do
       path: "/orders/1",
       status: status,
       headers: headers
-    }) {}
+    }) { sleep 0.001 }
   ensure
     Fiber[:opentrace_collector] = nil
+    Fiber[:opentrace_cached_context] = nil
     Fiber[:opentrace_sql_count] = nil
     Fiber[:opentrace_sql_total_ms] = nil
     OpenTrace.current_request_id = nil
@@ -75,9 +82,11 @@ RSpec.describe "Request summary with RequestCollector" do
           body = find_request_log(req)
           next false unless body
 
-          body["metadata"]["sql_query_count"] == 3 &&
-            body["metadata"]["sql_total_ms"].is_a?(Numeric) &&
-            body["metadata"]["sql_slowest_name"] == "User Load"
+          rs = body["request_summary"]
+          rs &&
+            rs["sql_count"] == 3 &&
+            rs["sql_total_ms"].is_a?(Numeric) &&
+            rs["sql_slowest_name"] == "User Load"
         }
     ).to have_been_made
   end
@@ -102,9 +111,11 @@ RSpec.describe "Request summary with RequestCollector" do
           body = find_request_log(req)
           next false unless body
 
-          body["metadata"]["view_render_count"] == 4 &&
-            body["metadata"]["view_total_ms"].is_a?(Numeric) &&
-            body["metadata"]["view_slowest_template"].is_a?(String)
+          rs = body["request_summary"]
+          rs &&
+            rs["view_count"] == 4 &&
+            rs["view_total_ms"].is_a?(Numeric) &&
+            rs["view_slowest_template"].is_a?(String)
         }
     ).to have_been_made
   end
@@ -123,7 +134,8 @@ RSpec.describe "Request summary with RequestCollector" do
           body = find_request_log(req)
           next false unless body
 
-          body["metadata"]["view_slowest_template"] == "orders/show.html.erb"
+          rs = body["request_summary"]
+          rs && rs["view_slowest_template"] == "orders/show.html.erb"
         }
     ).to have_been_made
   end
@@ -148,10 +160,12 @@ RSpec.describe "Request summary with RequestCollector" do
           body = find_request_log(req)
           next false unless body
 
-          body["metadata"]["cache_reads"] == 2 &&
-            body["metadata"]["cache_hits"] == 1 &&
-            body["metadata"]["cache_writes"] == 1 &&
-            body["metadata"]["cache_hit_ratio"] == 0.5
+          rs = body["request_summary"]
+          rs &&
+            rs["cache_reads"] == 2 &&
+            rs["cache_hits"] == 1 &&
+            rs["cache_writes"] == 1 &&
+            rs["cache_hit_ratio"] == 0.5
         }
     ).to have_been_made
   end
@@ -172,7 +186,10 @@ RSpec.describe "Request summary with RequestCollector" do
           body = find_request_log(req)
           next false unless body
 
-          tb = body["metadata"]["time_breakdown"]
+          rs = body["request_summary"]
+          next false unless rs
+
+          tb = rs["time_breakdown"]
           tb.is_a?(Hash) &&
             tb.key?("sql_pct") &&
             tb.key?("view_pct") &&
@@ -205,7 +222,10 @@ RSpec.describe "Request summary with RequestCollector" do
           body = find_request_log(req)
           next false unless body
 
-          timeline = body["metadata"]["timeline"]
+          rs = body["request_summary"]
+          next false unless rs
+
+          timeline = rs["timeline"]
           timeline.is_a?(Array) &&
             timeline.size == 3 &&
             timeline[0]["t"] == "sql" &&
@@ -278,14 +298,15 @@ RSpec.describe "Request summary with RequestCollector" do
     # Just verify no crash
     sleep 0.3
 
-    # No request log with view data should be sent
+    # No request log with view data should be sent (neither in metadata nor request_summary)
     expect(
       a_request(:post, "https://opentrace.test/api/logs")
         .with { |req|
           body = find_request_log(req)
           next false unless body
 
-          body["metadata"]&.key?("view_render_count")
+          (body["metadata"]&.key?("view_render_count")) ||
+            (body["request_summary"]&.key?("view_count"))
         }
     ).not_to have_been_made
   end

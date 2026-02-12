@@ -37,16 +37,22 @@ if defined?(::Rails::Railtie)
         # Subscribe to SQL query notifications (also increments N+1 counter and feeds collector)
         if OpenTrace.config.sql_logging
           ActiveSupport::Notifications.subscribe("sql.active_record") do |*args|
+            # Skip Event allocation when outside a request and below threshold
+            sql_count = Fiber[:opentrace_sql_count]
+            collector = Fiber[:opentrace_collector]
+            needs_forward = OpenTrace.config.sql_duration_threshold_ms <= 0
+
+            next unless sql_count || collector || needs_forward
+
             event = ActiveSupport::Notifications::Event.new(*args)
 
             # Increment per-request SQL counter (Fiber-local, zero-cost)
-            if Fiber[:opentrace_sql_count]
-              Fiber[:opentrace_sql_count] += 1
+            if sql_count
+              Fiber[:opentrace_sql_count] = sql_count + 1
               Fiber[:opentrace_sql_total_ms] = (Fiber[:opentrace_sql_total_ms] || 0.0) + (event.duration || 0.0)
             end
 
             # Feed RequestCollector for timeline & summary
-            collector = Fiber[:opentrace_collector]
             if collector
               payload = event.payload
               unless payload[:name] == "SCHEMA"
@@ -65,15 +71,18 @@ if defined?(::Rails::Railtie)
         else
           # Even when sql_logging is off, still count queries for N+1 detection and feed collector
           ActiveSupport::Notifications.subscribe("sql.active_record") do |*args|
+            sql_count = Fiber[:opentrace_sql_count]
+            collector = Fiber[:opentrace_collector]
+            next unless sql_count || collector
+
             event = ActiveSupport::Notifications::Event.new(*args)
 
-            if Fiber[:opentrace_sql_count]
-              Fiber[:opentrace_sql_count] += 1
+            if sql_count
+              Fiber[:opentrace_sql_count] = sql_count + 1
               Fiber[:opentrace_sql_total_ms] = (Fiber[:opentrace_sql_total_ms] || 0.0) + (event.duration || 0.0)
             end
 
             # Feed RequestCollector for timeline & summary
-            collector = Fiber[:opentrace_collector]
             if collector
               payload = event.payload
               unless payload[:name] == "SCHEMA"
@@ -174,13 +183,7 @@ if defined?(::Rails::Railtie)
           payload = event.payload
           return if ignored_path?(payload[:path])
           metadata = {
-            request_id: payload[:headers]&.env&.dig("action_dispatch.request_id"),
-            controller: payload[:controller],
-            action: payload[:action],
-            method: payload[:method],
-            path: payload[:path],
-            status: payload[:status],
-            duration_ms: event.duration&.round(1)
+            request_id: payload[:headers]&.env&.dig("action_dispatch.request_id")
           }.compact
 
           # Attempt to capture current user ID if available
@@ -206,10 +209,40 @@ if defined?(::Rails::Railtie)
           # Request headers
           extract_request_headers(payload, metadata)
 
-          # Merge collector summary (Phase 2) or fall back to Fiber-local counters (Phase 1)
+          # Build structured request_summary from collector (or fall back to Fiber-locals)
+          request_summary = nil
           collector = Fiber[:opentrace_collector]
           if collector
-            metadata.merge!(collector.summary)
+            summary = collector.summary
+            request_summary = {
+              controller: payload[:controller],
+              action: payload[:action],
+              method: payload[:method],
+              path: payload[:path],
+              status: payload[:status],
+              duration_ms: event.duration&.round(1),
+              sql_count: summary[:sql_query_count],
+              sql_total_ms: summary[:sql_total_ms],
+              sql_slowest_ms: summary[:sql_slowest_ms],
+              sql_slowest_name: summary[:sql_slowest_name],
+              n_plus_one: summary[:n_plus_one_warning] || false,
+              view_count: summary[:view_render_count],
+              view_total_ms: summary[:view_total_ms],
+              view_slowest_ms: summary[:view_slowest_ms],
+              view_slowest_template: summary[:view_slowest_template],
+              cache_reads: summary[:cache_reads],
+              cache_hits: summary[:cache_hits],
+              cache_writes: summary[:cache_writes],
+              cache_hit_ratio: summary[:cache_hit_ratio],
+              http_external_count: summary[:http_external_count],
+              http_external_total_ms: summary[:http_external_total_ms],
+              http_slowest_ms: summary[:http_slowest_ms],
+              http_slowest_host: summary[:http_slowest_host],
+              memory_before_mb: summary[:memory_before_mb],
+              memory_after_mb: summary[:memory_after_mb],
+              memory_delta_mb: summary[:memory_delta_mb],
+              timeline: summary[:timeline]
+            }.compact
 
             # Compute time breakdown
             total = event.duration || 0.0
@@ -218,7 +251,7 @@ if defined?(::Rails::Railtie)
               view_pct = [((collector.view_total_ms / total) * 100).round(1), 100.0].min
               http_pct = collector.http_count > 0 ? [((collector.http_total_ms / total) * 100).round(1), 100.0].min : 0.0
               other_pct = [100 - sql_pct - view_pct - http_pct, 0].max.round(1)
-              metadata[:time_breakdown] = {
+              request_summary[:time_breakdown] = {
                 sql_pct: sql_pct,
                 view_pct: view_pct,
                 http_pct: http_pct,
@@ -226,10 +259,24 @@ if defined?(::Rails::Railtie)
               }
             end
           elsif Fiber[:opentrace_sql_count]
-            # Fallback: Phase 1 N+1 counter from Fiber-locals
+            # Fallback: Fiber-local counters when no collector
+            metadata[:controller] = payload[:controller]
+            metadata[:action] = payload[:action]
+            metadata[:method] = payload[:method]
+            metadata[:path] = payload[:path]
+            metadata[:status] = payload[:status]
+            metadata[:duration_ms] = event.duration&.round(1)
             metadata[:sql_query_count] = Fiber[:opentrace_sql_count]
             metadata[:sql_total_ms] = Fiber[:opentrace_sql_total_ms]&.round(1)
             metadata[:n_plus_one_warning] = true if Fiber[:opentrace_sql_count] > 20
+          else
+            # No collector, no Fiber-locals — include request identity in metadata
+            metadata[:controller] = payload[:controller]
+            metadata[:action] = payload[:action]
+            metadata[:method] = payload[:method]
+            metadata[:path] = payload[:path]
+            metadata[:status] = payload[:status]
+            metadata[:duration_ms] = event.duration&.round(1)
           end
 
           level = if payload[:exception]
@@ -243,7 +290,7 @@ if defined?(::Rails::Railtie)
                   end
           message = "#{payload[:method]} #{payload[:path]} #{payload[:status]} #{event.duration&.round(1)}ms"
 
-          OpenTrace.log(level, message, metadata)
+          OpenTrace.log(level, message, metadata, request_summary: request_summary)
         rescue StandardError
           # Swallow
         end
@@ -377,6 +424,11 @@ if defined?(::Rails::Railtie)
         end
 
         def extract_user_id(payload)
+          # Prefer user_id from cached request context (avoids calling
+          # current_user which may trigger DB queries or auth logic)
+          cached = Fiber[:opentrace_cached_context]
+          return cached[:user_id] if cached&.key?(:user_id)
+
           controller = payload[:controller_instance]
           return unless controller
 

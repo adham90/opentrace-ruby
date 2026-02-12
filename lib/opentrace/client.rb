@@ -393,7 +393,15 @@ module OpenTrace
       meta[:sql] = meta[:sql][0, 200] + "..." if meta[:sql].is_a?(String) && meta[:sql].length > 200
       meta[:exception_message] = meta[:exception_message][0, 200] + "..." if meta[:exception_message].is_a?(String) && meta[:exception_message].length > 200
 
-      payload.merge(metadata: meta)
+      result = payload.merge(metadata: meta)
+
+      # Remove timeline from request_summary (can be very large)
+      if result[:request_summary]
+        result[:request_summary] = result[:request_summary].dup
+        result[:request_summary].delete(:timeline)
+      end
+
+      result
     end
   end
 end

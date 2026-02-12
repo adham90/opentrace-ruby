@@ -18,7 +18,12 @@ module OpenTrace
 
     def initialize
       super(nil)
-      self.level = ::Logger::DEBUG
+      # Match OpenTrace's min_level so BroadcastLogger doesn't downgrade
+      # the effective log level for the entire app. Without this, having
+      # level=DEBUG here causes BroadcastLogger.level to drop to DEBUG,
+      # which forces evaluation of all debug blocks and processing of all
+      # debug messages across ALL broadcast targets — even in production.
+      self.level = OpenTrace.config.logger_severity
     end
 
     def add(severity, message = nil, progname = nil, &block)

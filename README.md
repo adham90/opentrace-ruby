@@ -710,12 +710,50 @@ Request Start
     Cache events ──► collector.record_cache()  (no queue push)
     HTTP events ──► collector.record_http()    (no queue push)
   Request End
-    Controller subscriber merges collector.summary() into one log
-    One queue push with everything
+    Controller subscriber builds request_summary from collector
+    One queue push: metadata (user/request context) + request_summary (perf data)
   Middleware cleans up RequestCollector
 ```
 
 This means a request with 30 SQL queries, 50 view renders, and 10 cache operations produces **one log entry** instead of 91.
+
+### Structured Request Metrics
+
+When a `RequestCollector` is active, performance data is sent as a **separate `request_summary` field** instead of being merged into metadata. This allows the server to store it in a dedicated `request_summaries` table with indexed columns for fast analytical queries.
+
+```ruby
+# Sent automatically by the Rails subscriber — no code changes needed.
+# The payload looks like:
+{
+  "metadata": { "request_id": "req-abc", "user_id": 42 },
+  "request_summary": {
+    "controller": "InvoicesController",
+    "action": "index",
+    "method": "GET",
+    "path": "/invoices",
+    "status": 200,
+    "duration_ms": 45.2,
+    "sql_count": 3,
+    "sql_total_ms": 12.1,
+    "n_plus_one": false,
+    "view_count": 2,
+    "view_total_ms": 28.3,
+    "cache_reads": 1,
+    "cache_hits": 1,
+    "cache_hit_ratio": 1.0,
+    "timeline": [{"t": "sql", "n": "Invoice Load", "ms": 8.2, "at": 2.0}]
+  }
+}
+```
+
+You can also pass `request_summary:` manually:
+
+```ruby
+OpenTrace.log("INFO", "Custom request", { user_id: 42 },
+  request_summary: { controller: "Custom", action: "run", sql_count: 5 })
+```
+
+**Backward compatibility**: Old servers ignore the `request_summary` field. When no collector is active (background jobs, non-Rails), data falls back to metadata as before.
 
 ## Log Payload Format
 
@@ -735,6 +773,19 @@ Each log is sent as a JSON object to `POST /api/logs`:
     "hostname": "web-01",
     "pid": 12345,
     "git_sha": "a1b2c3d"
+  },
+  "request_summary": {
+    "controller": "InvoicesController",
+    "action": "index",
+    "method": "GET",
+    "path": "/invoices",
+    "status": 200,
+    "duration_ms": 45.2,
+    "sql_count": 3,
+    "sql_total_ms": 12.1,
+    "view_count": 2,
+    "view_total_ms": 28.3,
+    "timeline": [...]
   }
 }
 ```
@@ -749,6 +800,7 @@ Each log is sent as a JSON object to `POST /api/logs`:
 | `trace_id` | string | no |
 | `event_type` | string | no |
 | `metadata` | object | no |
+| `request_summary` | object | no |
 
 The server accepts a single JSON object or an array of objects.
 

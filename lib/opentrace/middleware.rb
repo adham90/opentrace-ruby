@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "request_collector"
+
 module OpenTrace
   class Middleware
     def initialize(app)
@@ -14,7 +16,6 @@ module OpenTrace
 
       # Create RequestCollector for accumulate-and-summarize pattern
       if OpenTrace.enabled? && OpenTrace.config.request_summary
-        require_relative "request_collector"
         collector = OpenTrace::RequestCollector.new(
           max_timeline: OpenTrace.config.timeline_max_events
         )
@@ -35,6 +36,7 @@ module OpenTrace
       end
 
       Fiber[:opentrace_collector] = nil
+      Fiber[:opentrace_cached_context] = nil
       Fiber[:opentrace_sql_count] = nil
       Fiber[:opentrace_sql_total_ms] = nil
       OpenTrace.current_request_id = nil
