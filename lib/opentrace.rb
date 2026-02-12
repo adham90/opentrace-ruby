@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "socket"
+require "digest"
 require_relative "opentrace/version"
 require_relative "opentrace/config"
 require_relative "opentrace/client"
@@ -70,6 +71,7 @@ module OpenTrace
                     exception.backtrace.reject { |l| l.include?("/gems/") }
                   end
         meta[:backtrace] = cleaned.first(15)
+        meta[:error_fingerprint] = compute_error_fingerprint(exception.class.name, cleaned)
       end
 
       log("ERROR", exception.message.to_s, meta)
@@ -143,6 +145,16 @@ module OpenTrace
       }.compact
     rescue StandardError
       {}
+    end
+
+    def compute_error_fingerprint(exception_class, backtrace)
+      origin = if backtrace.is_a?(Array)
+                 backtrace.find { |l| l.include?("app/") || l.include?("lib/") } || backtrace.first
+               end
+      normalized_origin = origin&.gsub(/:\d+:/, ":") || "unknown"
+      Digest::MD5.hexdigest("#{exception_class}||#{normalized_origin}")[0, 12]
+    rescue StandardError
+      nil
     end
 
     def resolve_context

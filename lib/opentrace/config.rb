@@ -9,7 +9,9 @@ module OpenTrace
                   :context, :min_level, :hostname, :pid, :git_sha,
                   :batch_size, :flush_interval,
                   :sql_logging, :sql_duration_threshold_ms,
-                  :ignore_paths
+                  :ignore_paths,
+                  :pool_monitoring, :pool_monitoring_interval,
+                  :queue_monitoring, :queue_monitoring_interval
 
     def initialize
       @endpoint    = nil
@@ -28,6 +30,10 @@ module OpenTrace
       @sql_logging    = true
       @sql_duration_threshold_ms = 0.0
       @ignore_paths   = []
+      @pool_monitoring = false
+      @pool_monitoring_interval = 30
+      @queue_monitoring = false
+      @queue_monitoring_interval = 60
     end
 
     def valid?
