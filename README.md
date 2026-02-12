@@ -25,7 +25,8 @@ A thin, safe Ruby client that forwards structured application logs to an [OpenTr
 - **Rails 7.1+ BroadcastLogger** -- native support via `broadcast_to`
 - **TaggedLogging** -- preserves `ActiveSupport::TaggedLogging` tags in metadata
 - **Context support** -- attach global metadata to every log via Hash or Proc
-- **Level filtering** -- `min_level` config to control which severities are forwarded
+- **Business events** -- `OpenTrace.event` sends typed events (e.g. `payment.completed`) that bypass level filtering
+- **Level filtering** -- `min_level` threshold or `allowed_levels` list to control which severities are forwarded
 - **Auto-enrichment** -- every log includes `hostname`, `pid`, and `git_sha` automatically
 - **Exception helper** -- `OpenTrace.error` captures class, message, cleaned backtrace, and error fingerprint
 - **Runtime controls** -- enable/disable logging at runtime without restarting
@@ -87,6 +88,7 @@ OpenTrace.configure do |c|
   c.timeout     = 1.0                    # HTTP timeout in seconds (default: 1.0)
   c.enabled     = true                   # default: true
   c.min_level   = :info                  # minimum level to forward (default: :debug)
+  c.allowed_levels = [:warn, :error]     # explicit level list (overrides min_level, default: nil)
   c.batch_size  = 50                     # logs per batch (default: 50)
   c.flush_interval = 5.0                 # seconds between flushes (default: 5.0)
 
@@ -128,14 +130,20 @@ If any required field (`endpoint`, `api_key`, `service`) is missing or empty, th
 
 ### Level Filtering
 
-Control which log levels are forwarded with `min_level`:
+Control which log levels are forwarded with `min_level` (threshold) or `allowed_levels` (explicit list):
 
 ```ruby
 OpenTrace.configure do |c|
   # ...
+  # Option A: Threshold — forward this level and above
   c.min_level = :warn  # only forward WARN, ERROR, and FATAL
+
+  # Option B: Explicit list — forward only these levels (overrides min_level)
+  c.allowed_levels = [:warn, :error]  # only forward WARN and ERROR
 end
 ```
+
+When `allowed_levels` is set, it takes precedence over `min_level`. When `allowed_levels` is `nil` (the default), `min_level` is used.
 
 Available levels: `:debug`, `:info`, `:warn`, `:error`, `:fatal`
 
@@ -175,6 +183,18 @@ This captures:
 - `exception_message` -- truncated to 500 characters
 - `backtrace` -- cleaned (Rails backtrace cleaner or gem-filtered), limited to 15 frames
 - `error_fingerprint` -- 12-char hash for grouping identical errors (stable across line number changes)
+
+### Business Events
+
+Use `OpenTrace.event` to send typed business events. Events always send at `INFO` level and **bypass level filtering** — they are never suppressed by `min_level` or `allowed_levels`:
+
+```ruby
+OpenTrace.event("payment.completed", "User paid $49.99", { user_id: 42, amount: 49.99 })
+OpenTrace.event("auth.login", "Google OAuth login", { provider: "google", user_id: 7 })
+OpenTrace.event("order.shipped", "Order dispatched", { order_id: "ORD-123" })
+```
+
+Events include an `event_type` field in the payload, making them filterable on the server. They inherit context, `request_id`, and static context just like normal logs.
 
 ### Logger Wrapper
 
@@ -622,6 +642,7 @@ Each log is sent as a JSON object to `POST /api/logs`:
 | `service` | string | no |
 | `environment` | string | no |
 | `trace_id` | string | no |
+| `event_type` | string | no |
 | `metadata` | object | no |
 
 The server accepts a single JSON object or an array of objects.

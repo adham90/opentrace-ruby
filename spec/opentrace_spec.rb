@@ -567,6 +567,227 @@ RSpec.describe OpenTrace do
     end
   end
 
+  describe ".event" do
+    before do
+      configure_opentrace!
+      stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+    end
+
+    it "sends with event_type and level INFO" do
+      OpenTrace.event("payment.completed", "User paid $99")
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            body = parse_log_body(req)
+            body["event_type"] == "payment.completed" &&
+              body["level"] == "INFO" &&
+              body["message"] == "User paid $99" &&
+              body["service"] == "test-service"
+          }
+      ).to have_been_made
+    end
+
+    it "bypasses min_level filtering" do
+      OpenTrace.config.min_level = :error
+
+      WebMock.reset!
+      stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+
+      OpenTrace.event("auth.login", "User logged in")
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            body = parse_log_body(req)
+            body["event_type"] == "auth.login"
+          }
+      ).to have_been_made
+    end
+
+    it "bypasses allowed_levels filtering" do
+      OpenTrace.config.allowed_levels = [:error]
+
+      WebMock.reset!
+      stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+
+      OpenTrace.event("order.shipped", "Order shipped")
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            body = parse_log_body(req)
+            body["event_type"] == "order.shipped"
+          }
+      ).to have_been_made
+    end
+
+    it "inherits context, request_id, and static_context" do
+      OpenTrace.config.context = { tenant: "acme" }
+      Fiber[:opentrace_request_id] = "req-evt-1"
+
+      OpenTrace.event("user.registered", "New user")
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            body = parse_log_body(req)
+            body["event_type"] == "user.registered" &&
+              body["metadata"]["tenant"] == "acme" &&
+              body["metadata"]["request_id"] == "req-evt-1" &&
+              body["metadata"].key?("hostname")
+          }
+      ).to have_been_made
+    ensure
+      Fiber[:opentrace_request_id] = nil
+    end
+
+    it "merges caller-provided metadata" do
+      OpenTrace.event("payment.completed", "Paid", { order_id: 123, amount: 99.99 })
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            meta = parse_log_body(req)["metadata"]
+            meta["order_id"] == 123 && meta["amount"] == 99.99
+          }
+      ).to have_been_made
+    end
+
+    it "does nothing when disabled" do
+      OpenTrace.disable!
+      expect { OpenTrace.event("payment.completed", "Paid") }.not_to raise_error
+    end
+
+    it "never raises on any error" do
+      OpenTrace.reset!
+      expect { OpenTrace.event("payment.completed", "Paid") }.not_to raise_error
+    end
+  end
+
+  describe "config.allowed_levels" do
+    before do
+      configure_opentrace!
+      stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+    end
+
+    it "sends only allowed levels when set" do
+      OpenTrace.config.allowed_levels = [:warn, :error]
+
+      WebMock.reset!
+      stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+
+      OpenTrace.log("DEBUG", "filtered out")
+      OpenTrace.log("INFO", "filtered out")
+      OpenTrace.log("WARN", "should send")
+      OpenTrace.log("ERROR", "should send")
+      sleep 0.5
+
+      # Entries may be batched together, so check the full array
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            entries = JSON.parse(req.body)
+            entries = [entries] unless entries.is_a?(Array)
+            entries.any? { |e| %w[DEBUG INFO].include?(e["level"]) }
+          }
+      ).not_to have_been_made
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            entries = JSON.parse(req.body)
+            entries = [entries] unless entries.is_a?(Array)
+            entries.any? { |e| e["level"] == "WARN" }
+          }
+      ).to have_been_made
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            entries = JSON.parse(req.body)
+            entries = [entries] unless entries.is_a?(Array)
+            entries.any? { |e| e["level"] == "ERROR" }
+          }
+      ).to have_been_made
+    end
+
+    it "takes precedence over min_level" do
+      OpenTrace.config.min_level = :error
+      OpenTrace.config.allowed_levels = [:debug, :warn]
+
+      WebMock.reset!
+      stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+
+      OpenTrace.log("DEBUG", "allowed by list")
+      OpenTrace.log("WARN", "allowed by list")
+      OpenTrace.log("ERROR", "not in allowed list")
+      sleep 0.5
+
+      # Entries may be batched together, so check the full array
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            entries = JSON.parse(req.body)
+            entries = [entries] unless entries.is_a?(Array)
+            entries.any? { |e| e["level"] == "DEBUG" }
+          }
+      ).to have_been_made
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            entries = JSON.parse(req.body)
+            entries = [entries] unless entries.is_a?(Array)
+            entries.any? { |e| e["level"] == "WARN" }
+          }
+      ).to have_been_made
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            entries = JSON.parse(req.body)
+            entries = [entries] unless entries.is_a?(Array)
+            entries.any? { |e| e["level"] == "ERROR" }
+          }
+      ).not_to have_been_made
+    end
+
+    it "falls back to min_level when nil (default)" do
+      OpenTrace.config.allowed_levels = nil
+      OpenTrace.config.min_level = :warn
+
+      WebMock.reset!
+      stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+
+      OpenTrace.log("INFO", "below threshold")
+      OpenTrace.log("WARN", "at threshold")
+      sleep 0.5
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req| parse_log_body(req)["level"] == "INFO" }
+      ).not_to have_been_made
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req| parse_log_body(req)["level"] == "WARN" }
+      ).to have_been_made
+    end
+  end
+
   describe ".shutdown" do
     it "can be called without error even when unconfigured" do
       expect { OpenTrace.shutdown }.not_to raise_error

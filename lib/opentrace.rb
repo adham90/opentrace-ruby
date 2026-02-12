@@ -4,6 +4,7 @@ require "socket"
 require "digest"
 require_relative "opentrace/version"
 require_relative "opentrace/config"
+require_relative "opentrace/circuit_breaker"
 require_relative "opentrace/client"
 require_relative "opentrace/logger"
 require_relative "opentrace/log_forwarder"
@@ -79,6 +80,32 @@ module OpenTrace
       # Never raise to the host app
     end
 
+    def event(event_type, message, metadata = {})
+      return unless enabled?
+
+      meta = resolve_context
+      meta.merge!(metadata) if metadata.is_a?(Hash)
+      static_context.each { |k, v| meta[k] ||= v }
+      meta[:request_id] ||= current_request_id if current_request_id
+
+      trace_id = meta.delete(:trace_id)
+
+      payload = {
+        timestamp: Time.now.utc.strftime("%Y-%m-%dT%H:%M:%S.%6NZ"),
+        level: "INFO",
+        event_type: event_type.to_s,
+        service: config.service,
+        environment: config.environment,
+        message: message.to_s,
+        metadata: meta.compact
+      }
+      payload[:trace_id] = trace_id.to_s if trace_id
+
+      client.enqueue(payload)
+    rescue StandardError
+      # Never raise to the host app
+    end
+
     def enabled?
       config.enabled?
     end
@@ -134,7 +161,7 @@ module OpenTrace
     end
 
     def level_meets_threshold?(level)
-      LEVEL_VALUES[level.to_s.upcase].to_i >= config.min_level_value
+      config.level_allowed?(level)
     end
 
     def static_context
