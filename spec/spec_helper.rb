@@ -19,6 +19,9 @@ RSpec.configure do |config|
     Fiber[:opentrace_cached_context] = nil
     Fiber[:opentrace_logging] = nil
     Fiber[:opentrace_http_tracking_disabled] = nil
+    Fiber[:opentrace_trace_id] = nil
+    Fiber[:opentrace_span_id] = nil
+    Fiber[:opentrace_parent_span_id] = nil
 
     OpenTrace.reset!
   end

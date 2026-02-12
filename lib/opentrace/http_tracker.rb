@@ -11,6 +11,9 @@ module OpenTrace
       # Guard 2: skip if this IS an OpenTrace dispatch call (prevent infinite recursion)
       return super if Fiber[:opentrace_http_tracking_disabled]
 
+      # Inject trace context into outgoing request headers
+      inject_trace_context(req) if OpenTrace.config.trace_propagation
+
       collector = Fiber[:opentrace_collector]
       start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
@@ -49,6 +52,31 @@ module OpenTrace
       end
 
       raise # ALWAYS re-raise — never swallow app errors
+    end
+
+    private
+
+    def inject_trace_context(req)
+      trace_id = Fiber[:opentrace_trace_id]
+      span_id = Fiber[:opentrace_span_id]
+      return unless trace_id
+
+      # Set X-Trace-ID for OpenTrace-to-OpenTrace propagation
+      req["X-Trace-ID"] = trace_id
+
+      # Set X-Request-ID for Rails convention compatibility
+      request_id = Fiber[:opentrace_request_id]
+      req["X-Request-ID"] = request_id if request_id
+
+      # Set W3C traceparent for interoperability with OpenTelemetry etc.
+      if span_id
+        req["traceparent"] = TraceContext.build_traceparent(
+          trace_id: trace_id,
+          span_id: span_id
+        )
+      end
+    rescue StandardError
+      # Never let trace propagation break the HTTP call
     end
   end
 end

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "request_collector"
+require_relative "trace_context"
 
 module OpenTrace
   class Middleware
@@ -13,6 +14,16 @@ module OpenTrace
       OpenTrace.current_request_id = request_id
       Fiber[:opentrace_sql_count] = 0
       Fiber[:opentrace_sql_total_ms] = 0.0
+
+      # Extract or generate trace context
+      if OpenTrace.config.trace_propagation
+        trace_id, parent_span_id = extract_trace_context(env)
+        span_id = TraceContext.generate_span_id
+
+        Fiber[:opentrace_trace_id] = trace_id
+        Fiber[:opentrace_span_id] = span_id
+        Fiber[:opentrace_parent_span_id] = parent_span_id
+      end
 
       # Create RequestCollector for accumulate-and-summarize pattern
       if OpenTrace.enabled? && OpenTrace.config.request_summary
@@ -39,10 +50,43 @@ module OpenTrace
       Fiber[:opentrace_cached_context] = nil
       Fiber[:opentrace_sql_count] = nil
       Fiber[:opentrace_sql_total_ms] = nil
+      Fiber[:opentrace_trace_id] = nil
+      Fiber[:opentrace_span_id] = nil
+      Fiber[:opentrace_parent_span_id] = nil
       OpenTrace.current_request_id = nil
     end
 
     private
+
+    # Extract trace context from incoming request headers.
+    # Priority: W3C traceparent > X-Trace-ID > request_id > generate new
+    def extract_trace_context(env)
+      parent_span_id = nil
+
+      # Try W3C traceparent first
+      if (traceparent = env["HTTP_TRACEPARENT"])
+        parsed = TraceContext.parse_traceparent(traceparent)
+        if parsed
+          return [parsed[:trace_id], parsed[:parent_id]]
+        end
+      end
+
+      # Try OpenTrace/custom trace ID header
+      if (trace_id = env["HTTP_X_TRACE_ID"])
+        normalized = TraceContext.normalize_trace_id(trace_id)
+        return [normalized, parent_span_id] if normalized
+      end
+
+      # Fall back to request_id (Rails convention)
+      request_id = env["action_dispatch.request_id"] || env["HTTP_X_REQUEST_ID"]
+      if request_id
+        normalized = TraceContext.normalize_trace_id(request_id)
+        return [normalized, parent_span_id] if normalized
+      end
+
+      # Generate new trace ID
+      [TraceContext.generate_trace_id, nil]
+    end
 
     def current_rss_mb
       if RUBY_PLATFORM.include?("linux")

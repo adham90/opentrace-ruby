@@ -10,6 +10,7 @@ require_relative "opentrace/client"
 require_relative "opentrace/logger"
 require_relative "opentrace/log_forwarder"
 require_relative "opentrace/middleware"
+require_relative "opentrace/trace_context"
 
 module OpenTrace
   LEVEL_VALUES = { "DEBUG" => 0, "INFO" => 1, "WARN" => 2, "ERROR" => 3, "FATAL" => 4 }.freeze
@@ -50,6 +51,8 @@ module OpenTrace
 
         # Extract trace_id to top level before building payload
         trace_id = meta.delete(:trace_id)
+        # Use Fiber-local trace context (set by middleware) if not explicitly provided
+        trace_id ||= Fiber[:opentrace_trace_id]
 
         payload = {
           timestamp: Time.now.utc.strftime("%Y-%m-%dT%H:%M:%S.%6NZ"),
@@ -61,6 +64,8 @@ module OpenTrace
         }
 
         payload[:trace_id] = trace_id.to_s if trace_id
+        payload[:span_id] = Fiber[:opentrace_span_id] if Fiber[:opentrace_span_id]
+        payload[:parent_span_id] = Fiber[:opentrace_parent_span_id] if Fiber[:opentrace_parent_span_id]
         payload[:request_summary] = request_summary if request_summary
 
         client.enqueue(payload)
@@ -105,6 +110,7 @@ module OpenTrace
         meta[:request_id] ||= current_request_id if current_request_id
 
         trace_id = meta.delete(:trace_id)
+        trace_id ||= Fiber[:opentrace_trace_id]
 
         payload = {
           timestamp: Time.now.utc.strftime("%Y-%m-%dT%H:%M:%S.%6NZ"),
@@ -116,6 +122,8 @@ module OpenTrace
           metadata: meta.compact
         }
         payload[:trace_id] = trace_id.to_s if trace_id
+        payload[:span_id] = Fiber[:opentrace_span_id] if Fiber[:opentrace_span_id]
+        payload[:parent_span_id] = Fiber[:opentrace_parent_span_id] if Fiber[:opentrace_parent_span_id]
 
         client.enqueue(payload)
       ensure

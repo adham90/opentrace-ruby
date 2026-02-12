@@ -40,6 +40,7 @@ A thin, safe Ruby client that forwards structured application logs to an [OpenTr
 - **Memory delta tracking** -- snapshots process RSS before/after each request (opt-in)
 - **External HTTP tracking** -- captures outbound Net::HTTP calls with timing (opt-in)
 - **Version negotiation** -- startup compatibility check with capability-based feature detection
+- **Distributed tracing** -- W3C Trace Context (`traceparent`) propagation across services with span IDs
 
 ## Installation
 
@@ -720,6 +721,25 @@ Please upgrade the opentrace gem. Log forwarding may not work correctly.
 
 Every request includes an `X-API-Version: 1` header so the server can reject incompatible clients with a clear error. Old servers without `/api/version` are handled gracefully — the check silently skips and all features remain enabled.
 
+### Distributed Tracing
+
+When `trace_propagation` is enabled (the default), the middleware extracts or generates a W3C-compatible trace context for each request:
+
+- **Incoming**: Reads `traceparent` header (W3C standard), falls back to `X-Trace-ID`, then `X-Request-ID`
+- **Outgoing**: When `http_tracking` is enabled, injects `traceparent`, `X-Trace-ID`, and `X-Request-ID` into outbound HTTP requests
+
+This enables cross-service correlation — all logs from a distributed request chain share the same `trace_id`.
+
+```ruby
+OpenTrace.configure do |c|
+  # ...
+  c.trace_propagation = true   # extract/propagate trace context (default: true)
+  c.http_tracking = true       # also inject into outgoing HTTP calls (opt-in)
+end
+```
+
+Each log entry includes `trace_id`, `span_id`, and `parent_span_id` (when available) as top-level fields. The server indexes these for fast trace lookups.
+
 ### Request Summary Architecture
 
 When `request_summary` is enabled, events within a request are **accumulated** in a Fiber-local `RequestCollector` instead of being pushed to the queue individually:
@@ -820,6 +840,8 @@ Each log is sent as a JSON object to `POST /api/logs`:
 | `service` | string | no |
 | `environment` | string | no |
 | `trace_id` | string | no |
+| `span_id` | string | no |
+| `parent_span_id` | string | no |
 | `event_type` | string | no |
 | `metadata` | object | no |
 | `request_summary` | object | no |
