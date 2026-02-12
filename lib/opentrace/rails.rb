@@ -34,7 +34,7 @@ if defined?(::Rails::Railtie)
           # Swallow - never affect the host app
         end
 
-        # Subscribe to SQL query notifications (also increments N+1 counter)
+        # Subscribe to SQL query notifications (also increments N+1 counter and feeds collector)
         if OpenTrace.config.sql_logging
           ActiveSupport::Notifications.subscribe("sql.active_record") do |*args|
             event = ActiveSupport::Notifications::Event.new(*args)
@@ -45,17 +45,44 @@ if defined?(::Rails::Railtie)
               Fiber[:opentrace_sql_total_ms] = (Fiber[:opentrace_sql_total_ms] || 0.0) + (event.duration || 0.0)
             end
 
+            # Feed RequestCollector for timeline & summary
+            collector = Fiber[:opentrace_collector]
+            if collector
+              payload = event.payload
+              unless payload[:name] == "SCHEMA"
+                table = nil
+                if payload[:sql] =~ /\b(?:FROM|INTO|UPDATE|JOIN)\s+[`"]?(\w+)[`"]?/i
+                  table = $1
+                end
+                collector.record_sql(name: payload[:name], duration_ms: event.duration || 0.0, table: table)
+              end
+            end
+
             forward_sql_log(event)
           rescue StandardError
             # Swallow
           end
         else
-          # Even when sql_logging is off, still count queries for N+1 detection
+          # Even when sql_logging is off, still count queries for N+1 detection and feed collector
           ActiveSupport::Notifications.subscribe("sql.active_record") do |*args|
+            event = ActiveSupport::Notifications::Event.new(*args)
+
             if Fiber[:opentrace_sql_count]
-              event = ActiveSupport::Notifications::Event.new(*args)
               Fiber[:opentrace_sql_count] += 1
               Fiber[:opentrace_sql_total_ms] = (Fiber[:opentrace_sql_total_ms] || 0.0) + (event.duration || 0.0)
+            end
+
+            # Feed RequestCollector for timeline & summary
+            collector = Fiber[:opentrace_collector]
+            if collector
+              payload = event.payload
+              unless payload[:name] == "SCHEMA"
+                table = nil
+                if payload[:sql] =~ /\b(?:FROM|INTO|UPDATE|JOIN)\s+[`"]?(\w+)[`"]?/i
+                  table = $1
+                end
+                collector.record_sql(name: payload[:name], duration_ms: event.duration || 0.0, table: table)
+              end
             end
           rescue StandardError
             # Swallow
@@ -76,6 +103,42 @@ if defined?(::Rails::Railtie)
           forward_deprecation_log(event)
         rescue StandardError
           # Swallow
+        end
+
+        # View render tracking (only records when RequestCollector exists)
+        %w[render_template.action_view render_partial.action_view].each do |event_name|
+          ActiveSupport::Notifications.subscribe(event_name) do |*args|
+            collector = Fiber[:opentrace_collector]
+            next unless collector
+
+            event = ActiveSupport::Notifications::Event.new(*args)
+            template = event.payload[:identifier]
+            # Shorten: /Users/deploy/app/views/orders/show.html.erb → orders/show.html.erb
+            template = template.split("views/").last if template&.include?("views/")
+
+            collector.record_view(template: template, duration_ms: event.duration || 0.0)
+          rescue StandardError
+            # Swallow
+          end
+        end
+
+        # Cache operation tracking (only records when RequestCollector exists)
+        %w[cache_read.active_support cache_write.active_support cache_delete.active_support].each do |event_name|
+          ActiveSupport::Notifications.subscribe(event_name) do |*args|
+            collector = Fiber[:opentrace_collector]
+            next unless collector
+
+            event = ActiveSupport::Notifications::Event.new(*args)
+            action = event_name.split(".").first.sub("cache_", "").to_sym # :read, :write, :delete
+
+            collector.record_cache(
+              action: action,
+              hit: event.payload[:hit],
+              duration_ms: event.duration || 0.0
+            )
+          rescue StandardError
+            # Swallow
+          end
         end
 
         # Start background monitors (opt-in)
@@ -137,8 +200,25 @@ if defined?(::Rails::Railtie)
           # Request headers
           extract_request_headers(payload, metadata)
 
-          # N+1 query counter from Fiber-locals
-          if Fiber[:opentrace_sql_count]
+          # Merge collector summary (Phase 2) or fall back to Fiber-local counters (Phase 1)
+          collector = Fiber[:opentrace_collector]
+          if collector
+            metadata.merge!(collector.summary)
+
+            # Compute time breakdown
+            total = event.duration || 0.0
+            if total > 0
+              sql_pct = ((collector.sql_total_ms / total) * 100).round(1)
+              view_pct = ((collector.view_total_ms / total) * 100).round(1)
+              other_pct = [100 - sql_pct - view_pct, 0].max.round(1)
+              metadata[:time_breakdown] = {
+                sql_pct: sql_pct,
+                view_pct: view_pct,
+                other_pct: other_pct
+              }
+            end
+          elsif Fiber[:opentrace_sql_count]
+            # Fallback: Phase 1 N+1 counter from Fiber-locals
             metadata[:sql_query_count] = Fiber[:opentrace_sql_count]
             metadata[:sql_total_ms] = Fiber[:opentrace_sql_total_ms]&.round(1)
             metadata[:n_plus_one_warning] = true if Fiber[:opentrace_sql_count] > 20

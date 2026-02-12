@@ -11,7 +11,8 @@ module OpenTrace
                   :sql_logging, :sql_duration_threshold_ms,
                   :ignore_paths,
                   :pool_monitoring, :pool_monitoring_interval,
-                  :queue_monitoring, :queue_monitoring_interval
+                  :queue_monitoring, :queue_monitoring_interval,
+                  :request_summary, :timeline, :timeline_max_events
 
     def initialize
       @endpoint    = nil
@@ -34,6 +35,9 @@ module OpenTrace
       @pool_monitoring_interval = 30
       @queue_monitoring = false
       @queue_monitoring_interval = 60
+      @request_summary = true
+      @timeline = true
+      @timeline_max_events = 200
     end
 
     def valid?
