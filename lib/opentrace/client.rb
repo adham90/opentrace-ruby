@@ -5,6 +5,7 @@ require "uri"
 require "json"
 require "zlib"
 require "stringio"
+require "securerandom"
 
 module OpenTrace
   class Client
@@ -288,6 +289,7 @@ module OpenTrace
     end
 
     def send_with_retry(json)
+      batch_id = SecureRandom.uuid
       attempts = 0
       max_attempts = @config.max_retries + 1
 
@@ -295,7 +297,7 @@ module OpenTrace
         attempts += 1
 
         begin
-          response = http_post(json)
+          response = http_post(json, batch_id: batch_id)
 
           return response if response.is_a?(Net::HTTPSuccess)
           return response unless retryable_response?(response)
@@ -316,12 +318,13 @@ module OpenTrace
       response
     end
 
-    def http_post(json)
+    def http_post(json, batch_id: nil)
       http = build_http(@uri)
       request = Net::HTTP::Post.new(@uri.request_uri)
       request["Authorization"] = "Bearer #{@config.api_key}"
       request["Content-Type"]  = "application/json"
       request["User-Agent"]    = "opentrace-ruby/#{OpenTrace::VERSION}"
+      request["X-Batch-ID"]    = batch_id if batch_id
 
       if @config.compression && json.bytesize > @config.compression_threshold
         request.body = gzip_compress(json)
