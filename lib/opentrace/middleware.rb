@@ -10,6 +10,9 @@ module OpenTrace
     end
 
     def call(env)
+      # When OpenTrace is disabled, pass through with zero overhead
+      return @app.call(env) unless OpenTrace.enabled?
+
       request_id = env["action_dispatch.request_id"] || env["HTTP_X_REQUEST_ID"]
       OpenTrace.current_request_id = request_id
       Fiber[:opentrace_sql_count] = 0
@@ -25,15 +28,18 @@ module OpenTrace
         Fiber[:opentrace_parent_span_id] = parent_span_id
       end
 
-      # Create RequestCollector for accumulate-and-summarize pattern
-      if OpenTrace.enabled? && OpenTrace.config.request_summary
-        collector = OpenTrace::RequestCollector.new(
-          max_timeline: OpenTrace.config.timeline_max_events
-        )
+      # Create RequestCollector only when features that need it are enabled
+      cfg = OpenTrace.config
+      needs_collector = cfg.request_summary &&
+        (cfg.view_tracking || cfg.cache_tracking || cfg.http_tracking ||
+         cfg.timeline || cfg.memory_tracking)
+
+      if needs_collector
+        max_timeline = cfg.timeline ? cfg.timeline_max_events : 0
+        collector = OpenTrace::RequestCollector.new(max_timeline: max_timeline)
         Fiber[:opentrace_collector] = collector
 
-        # Memory snapshot before request (opt-in)
-        if OpenTrace.config.memory_tracking
+        if cfg.memory_tracking
           collector.memory_before = current_rss_mb
         end
       end

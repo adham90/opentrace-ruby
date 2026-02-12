@@ -29,6 +29,10 @@ RSpec.describe "Rails integration" do
   end
 
   describe "Rails 7.1+ BroadcastLogger integration" do
+    before do
+      configure_opentrace!(log_forwarding: true)
+    end
+
     it "registers LogForwarder as a broadcast target" do
       app = Rails::Application.new
       broadcast_logger = BroadcastLoggerStub.new(::Logger.new(StringIO.new))
@@ -61,10 +65,23 @@ RSpec.describe "Rails integration" do
 
       expect(broadcast_logger.broadcasts).to be_empty
     end
+
+    it "skips broadcast when log_forwarding is false" do
+      configure_opentrace!(log_forwarding: false)
+
+      app = Rails::Application.new
+      broadcast_logger = BroadcastLoggerStub.new(::Logger.new(StringIO.new))
+      Rails.logger = broadcast_logger
+
+      run_after_initialize(app)
+
+      expect(broadcast_logger.broadcasts).to be_empty
+    end
   end
 
   describe "pre-7.1 logger wrapping (fallback)" do
     before do
+      configure_opentrace!(log_forwarding: true)
       # Use a plain logger without broadcast_to
       Rails.logger = ::Logger.new(StringIO.new)
     end
@@ -183,10 +200,9 @@ RSpec.describe "Rails integration" do
       ).to have_been_made
     end
 
-    it "captures user_id when controller responds to current_user" do
-      user_stub = Struct.new(:id).new(42)
-      controller_stub = Object.new
-      controller_stub.define_singleton_method(:current_user) { user_stub }
+    it "captures user_id from cached context" do
+      # Simulate middleware caching context with user_id
+      Fiber[:opentrace_cached_context] = { user_id: 42 }
 
       payload = {
         controller: "ApiController",
@@ -194,8 +210,7 @@ RSpec.describe "Rails integration" do
         method: "GET",
         path: "/api/items",
         status: 200,
-        headers: nil,
-        controller_instance: controller_stub
+        headers: nil
       }
 
       ActiveSupport::Notifications.instrument("process_action.action_controller", payload) {}
@@ -208,9 +223,11 @@ RSpec.describe "Rails integration" do
             body["metadata"]["user_id"] == 42
           }
       ).to have_been_made
+    ensure
+      Fiber[:opentrace_cached_context] = nil
     end
 
-    it "handles missing controller_instance gracefully" do
+    it "handles missing cached context gracefully" do
       payload = {
         controller: "HealthController",
         action: "show",
@@ -218,26 +235,6 @@ RSpec.describe "Rails integration" do
         path: "/healthz",
         status: 200,
         headers: nil
-      }
-
-      expect {
-        ActiveSupport::Notifications.instrument("process_action.action_controller", payload) {}
-        sleep 0.3
-      }.not_to raise_error
-    end
-
-    it "handles current_user raising an error gracefully" do
-      controller_stub = Object.new
-      controller_stub.define_singleton_method(:current_user) { raise "auth error" }
-
-      payload = {
-        controller: "ApiController",
-        action: "index",
-        method: "GET",
-        path: "/api/items",
-        status: 200,
-        headers: nil,
-        controller_instance: controller_stub
       }
 
       expect {
@@ -327,7 +324,15 @@ RSpec.describe "Rails integration" do
       ).to have_been_made
     end
 
-    it "captures filtered request params" do
+    it "captures filtered request params when detailed_request_log is enabled" do
+      # Re-initialize with detailed_request_log
+      ActiveSupport::Notifications.reset!
+      configure_opentrace!(detailed_request_log: true)
+      Rails.logger = ::Logger.new(StringIO.new)
+      app = Rails::Application.new
+      app.config.logger = ::Logger.new(StringIO.new)
+      run_after_initialize(app)
+
       request_stub = Struct.new(:filtered_parameters).new(
         { "controller" => "orders", "action" => "create", "order" => { "product_id" => 99 } }
       )
@@ -357,6 +362,13 @@ RSpec.describe "Rails integration" do
     end
 
     it "strips controller and action from params" do
+      ActiveSupport::Notifications.reset!
+      configure_opentrace!(detailed_request_log: true)
+      Rails.logger = ::Logger.new(StringIO.new)
+      app = Rails::Application.new
+      app.config.logger = ::Logger.new(StringIO.new)
+      run_after_initialize(app)
+
       request_stub = Struct.new(:filtered_parameters).new(
         { "controller" => "orders", "action" => "create", "name" => "test" }
       )
@@ -386,6 +398,13 @@ RSpec.describe "Rails integration" do
     end
 
     it "truncates oversized params" do
+      ActiveSupport::Notifications.reset!
+      configure_opentrace!(detailed_request_log: true)
+      Rails.logger = ::Logger.new(StringIO.new)
+      app = Rails::Application.new
+      app.config.logger = ::Logger.new(StringIO.new)
+      run_after_initialize(app)
+
       large_value = "x" * 3000
       request_stub = Struct.new(:filtered_parameters).new(
         { "data" => large_value }

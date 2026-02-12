@@ -7,7 +7,7 @@ require_relative "rails_spec_helper"
 
 RSpec.describe "Deprecation warning subscriber" do
   before do
-    configure_opentrace!
+    configure_opentrace!(deprecation_tracking: true)
     stub_request(:post, "https://opentrace.test/api/logs")
       .to_return(status: 201, body: '{"count":1}')
     ActiveSupport::Notifications.reset!

@@ -20,7 +20,9 @@ module OpenTrace
                   :request_summary, :timeline, :timeline_max_events,
                   :memory_tracking, :http_tracking,
                   :max_payload_bytes,
-                  :trace_propagation
+                  :trace_propagation,
+                  :log_forwarding, :view_tracking, :cache_tracking,
+                  :deprecation_tracking, :detailed_request_log
 
     def initialize
       @endpoint    = nil
@@ -30,7 +32,7 @@ module OpenTrace
       @timeout     = 1.0
       @enabled     = true
       @context     = nil    # nil | Hash | Proc
-      @min_level   = :debug # send everything by default
+      @min_level   = :info
       @allowed_levels = nil  # nil = use min_level threshold (backward compatible)
       @hostname       = nil
       @pid            = nil
@@ -46,7 +48,7 @@ module OpenTrace
       @on_drop        = nil # ->(count, reason) { ... }
       @compression    = true
       @compression_threshold = 1024 # only compress payloads > 1KB
-      @sql_logging    = true
+      @sql_logging    = false
       @sql_duration_threshold_ms = 0.0
       @ignore_paths   = []
       @pool_monitoring = false
@@ -54,12 +56,17 @@ module OpenTrace
       @queue_monitoring = false
       @queue_monitoring_interval = 60
       @request_summary = true
-      @timeline = true
+      @timeline = false
       @timeline_max_events = 200
       @memory_tracking = false
       @http_tracking = false
       @max_payload_bytes = 262_144 # 256 KB
       @trace_propagation = true
+      @log_forwarding = false
+      @view_tracking = false
+      @cache_tracking = false
+      @deprecation_tracking = false
+      @detailed_request_log = false
     end
 
     def valid?

@@ -47,10 +47,17 @@ def configure_opentrace!(overrides = {})
     c.min_level      = overrides.fetch(:min_level, :debug)
     c.context        = overrides[:context] if overrides.key?(:context)
     # Only override these if explicitly provided — preserve Config defaults otherwise
-    c.sql_logging     = overrides[:sql_logging]     if overrides.key?(:sql_logging)
-    c.request_summary = overrides[:request_summary]  if overrides.key?(:request_summary)
-    c.memory_tracking = overrides[:memory_tracking]  if overrides.key?(:memory_tracking)
-    c.http_tracking   = overrides[:http_tracking]    if overrides.key?(:http_tracking)
+    c.sql_logging          = overrides[:sql_logging]          if overrides.key?(:sql_logging)
+    c.request_summary      = overrides[:request_summary]      if overrides.key?(:request_summary)
+    c.memory_tracking      = overrides[:memory_tracking]      if overrides.key?(:memory_tracking)
+    c.http_tracking        = overrides[:http_tracking]        if overrides.key?(:http_tracking)
+    c.log_forwarding       = overrides[:log_forwarding]       if overrides.key?(:log_forwarding)
+    c.view_tracking        = overrides[:view_tracking]        if overrides.key?(:view_tracking)
+    c.cache_tracking       = overrides[:cache_tracking]       if overrides.key?(:cache_tracking)
+    c.deprecation_tracking = overrides[:deprecation_tracking] if overrides.key?(:deprecation_tracking)
+    c.detailed_request_log = overrides[:detailed_request_log] if overrides.key?(:detailed_request_log)
+    c.timeline             = overrides[:timeline]             if overrides.key?(:timeline)
+    c.timeline_max_events  = overrides[:timeline_max_events]  if overrides.key?(:timeline_max_events)
   end
 end
 

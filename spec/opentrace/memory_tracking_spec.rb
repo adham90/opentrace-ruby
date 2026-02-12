@@ -56,7 +56,7 @@ RSpec.describe "Memory tracking" do
       expect(Fiber[:opentrace_collector]).to be_nil
     end
 
-    it "does not set memory when memory_tracking is disabled" do
+    it "does not create collector when memory_tracking is disabled and no other features need it" do
       OpenTrace.config.memory_tracking = false
       OpenTrace.config.request_summary = true
 
@@ -69,8 +69,8 @@ RSpec.describe "Memory tracking" do
       mw = OpenTrace::Middleware.new(tracking_app)
       mw.call("action_dispatch.request_id" => "req-mem-off")
 
-      expect(collector_before_cleanup).to be_a(OpenTrace::RequestCollector)
-      expect(collector_before_cleanup.memory_before).to be_nil
+      # No collector when no features (view/cache/http/timeline/memory) need it
+      expect(collector_before_cleanup).to be_nil
     end
 
     it "captures memory snapshots during request lifecycle" do

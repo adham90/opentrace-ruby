@@ -8,7 +8,7 @@ require_relative "rails_spec_helper"
 
 RSpec.describe "SQL subscriber" do
   before do
-    configure_opentrace!
+    configure_opentrace!(sql_logging: true, min_level: :debug)
     stub_request(:post, "https://opentrace.test/api/logs")
       .to_return(status: 201, body: '{"count":1}')
     ActiveSupport::Notifications.reset!
@@ -134,6 +134,7 @@ RSpec.describe "SQL subscriber" do
   end
 
   it "respects sql_duration_threshold_ms" do
+    configure_opentrace!(sql_logging: true, min_level: :debug)
     OpenTrace.config.sql_duration_threshold_ms = 100.0
 
     WebMock.reset!
@@ -160,8 +161,8 @@ RSpec.describe "SQL subscriber" do
     ).not_to have_been_made
   end
 
-  it "does not subscribe when sql_logging is false" do
-    OpenTrace.config.sql_logging = false
+  it "does not forward SQL logs when sql_logging is false" do
+    configure_opentrace!(sql_logging: false)
 
     ActiveSupport::Notifications.reset!
     app = Rails::Application.new

@@ -12,6 +12,7 @@ module OpenTrace
 
     def initialize(max_timeline: MAX_TIMELINE_EVENTS)
       @max_timeline = max_timeline
+      @timeline_enabled = max_timeline > 0
 
       @sql_count = 0
       @sql_total_ms = 0.0
@@ -36,8 +37,12 @@ module OpenTrace
       @memory_before = nil
       @memory_after = nil
 
-      @timeline = []
-      @request_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      if @timeline_enabled
+        @timeline = []
+        @request_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      else
+        @timeline = nil
+      end
     end
 
     def record_sql(name:, duration_ms:, table: nil)
@@ -49,7 +54,9 @@ module OpenTrace
         @sql_slowest_name = name
       end
 
-      append_timeline({ t: :sql, n: name, ms: duration_ms.round(1), at: offset_ms })
+      if @timeline_enabled
+        append_timeline({ t: :sql, n: name, ms: duration_ms.round(1), at: offset_ms })
+      end
     end
 
     def record_view(template:, duration_ms:)
@@ -61,7 +68,9 @@ module OpenTrace
         @view_slowest_template = template
       end
 
-      append_timeline({ t: :view, n: template, ms: duration_ms.round(1), at: offset_ms })
+      if @timeline_enabled
+        append_timeline({ t: :view, n: template, ms: duration_ms.round(1), at: offset_ms })
+      end
     end
 
     def record_cache(action:, hit: nil, duration_ms: 0.0)
@@ -75,7 +84,9 @@ module OpenTrace
         @cache_deletes += 1
       end
 
-      append_timeline({ t: :cache, a: action, hit: hit, ms: duration_ms.round(2), at: offset_ms })
+      if @timeline_enabled
+        append_timeline({ t: :cache, a: action, hit: hit, ms: duration_ms.round(2), at: offset_ms })
+      end
     end
 
     def record_http(method:, url:, host:, status:, duration_ms:, error: nil)
@@ -87,9 +98,11 @@ module OpenTrace
         @http_slowest_host = host
       end
 
-      entry = { t: :http, n: "#{method} #{host}", ms: duration_ms.round(1), s: status, at: offset_ms }
-      entry[:err] = error if error
-      append_timeline(entry)
+      if @timeline_enabled
+        entry = { t: :http, n: "#{method} #{host}", ms: duration_ms.round(1), s: status, at: offset_ms }
+        entry[:err] = error if error
+        append_timeline(entry)
+      end
     end
 
     def summary
@@ -107,7 +120,7 @@ module OpenTrace
         cache_writes: @cache_writes,
         cache_hit_ratio: @cache_reads > 0 ? (@cache_hits.to_f / @cache_reads).round(2) : nil,
         n_plus_one_warning: @sql_count > 20 ? true : nil,
-        timeline: @timeline.empty? ? nil : @timeline
+        timeline: (@timeline.nil? || @timeline.empty?) ? nil : @timeline
       }
 
       # HTTP stats (only present if calls were made)

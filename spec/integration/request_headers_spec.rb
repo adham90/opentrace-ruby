@@ -7,7 +7,7 @@ require_relative "rails_spec_helper"
 
 RSpec.describe "Request headers capture" do
   before do
-    configure_opentrace!
+    configure_opentrace!(detailed_request_log: true)
     stub_request(:post, "https://opentrace.test/api/logs")
       .to_return(status: 201, body: '{"count":1}')
     ActiveSupport::Notifications.reset!

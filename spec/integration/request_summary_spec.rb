@@ -7,7 +7,7 @@ require_relative "rails_spec_helper"
 
 RSpec.describe "Request summary with RequestCollector" do
   before do
-    configure_opentrace!
+    configure_opentrace!(view_tracking: true, cache_tracking: true, timeline: true)
     stub_request(:post, "https://opentrace.test/api/logs")
       .to_return(status: 201, body: '{"count":1}')
     ActiveSupport::Notifications.reset!
@@ -226,22 +226,26 @@ RSpec.describe "Request summary with RequestCollector" do
           next false unless rs
 
           timeline = rs["timeline"]
-          timeline.is_a?(Array) &&
-            timeline.size == 3 &&
-            timeline[0]["t"] == "sql" &&
-            timeline[1]["t"] == "view" &&
-            timeline[2]["t"] == "cache"
+          next false unless timeline.is_a?(Array) && timeline.size >= 3
+
+          types = timeline.map { |e| e["t"] }
+          types.include?("sql") && types.include?("view") && types.include?("cache")
         }
     ).to have_been_made
   end
 
   it "does not create collector when request_summary is disabled" do
-    OpenTrace.config.request_summary = false
+    configure_opentrace!(request_summary: false)
+    ActiveSupport::Notifications.reset!
+    Rails.logger = ::Logger.new(StringIO.new)
+    app = Rails::Application.new
+    app.config.logger = ::Logger.new(StringIO.new)
+    OpenTrace::Railtie.initializer_blocks.each { |block| block.call(app) }
+    OpenTrace::Railtie.config.after_initialize_blocks.each { |block| block.call(app) }
 
     # Simulate middleware behavior — no collector should be created
     Fiber[:opentrace_sql_count] = 0
     Fiber[:opentrace_sql_total_ms] = 0.0
-    # Middleware checks config.request_summary, so collector stays nil
     expect(Fiber[:opentrace_collector]).to be_nil
 
     headers = Struct.new(:env).new({

@@ -7,6 +7,8 @@ RSpec.describe OpenTrace::Middleware do
   after { OpenTrace.current_request_id = nil }
 
   describe "#call" do
+    before { configure_opentrace! }
+
     it "sets request_id from action_dispatch.request_id" do
       captured_id = nil
       app = described_class.new(->(env) {
