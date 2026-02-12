@@ -82,22 +82,19 @@ RSpec.describe OpenTrace::Client, "retry and circuit breaker" do
       expect(call_count).to eq(2)
     end
 
-    it "retries on 429 too many requests" do
+    it "does not retry on 429 (handled by backpressure)" do
       call_count = 0
       stub_request(:post, "https://opentrace.test/api/logs")
         .to_return do |_req|
           call_count += 1
-          if call_count == 1
-            { status: 429, body: "rate limited" }
-          else
-            { status: 201, body: '{"count":1}' }
-          end
+          { status: 429, body: "rate limited", headers: { "Retry-After" => "5" } }
         end
 
       client.enqueue({ level: "INFO", message: "rate limited" })
-      sleep 1.0
+      sleep 0.5
 
-      expect(call_count).to eq(2)
+      # 429 is not retried in the retry loop — only 1 attempt
+      expect(call_count).to eq(1)
     end
 
     it "stops retrying after max_retries exhausted" do

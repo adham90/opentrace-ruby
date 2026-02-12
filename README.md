@@ -589,9 +589,54 @@ Your App --log()--> [In-Memory Queue] --background thread--> POST /api/logs --> 
 - If the queue exceeds 1,000 items, new logs are dropped (oldest are preserved)
 - Payloads exceeding 32 KB are intelligently truncated (backtrace, params, SQL removed first)
 - If still too large after truncation, the payload is split and retried in smaller batches
-- All network errors (timeouts, connection refused, DNS failures) are swallowed silently
+- Failed requests are retried with exponential backoff (up to 3 attempts by default)
+- A circuit breaker stops sending when the server is unreachable, resuming after a cooldown
+- Rate-limited responses (429) trigger a backoff delay, respecting the server's `Retry-After` header
+- Authentication failures (401) suspend sending and print a one-time warning to STDERR
 - The HTTP timeout defaults to 1 second
 - Pending logs are flushed on process exit via an `at_exit` hook
+
+### Retry & Circuit Breaker
+
+Failed HTTP requests are retried with exponential backoff and jitter. Only server errors (5xx) and network failures are retried -- client errors (4xx) are not.
+
+```ruby
+OpenTrace.configure do |c|
+  # ...
+  c.max_retries      = 2    # up to 3 total attempts (default: 2)
+  c.retry_base_delay = 0.1  # 100ms initial backoff (default: 0.1)
+  c.retry_max_delay  = 2.0  # cap backoff at 2 seconds (default: 2.0)
+end
+```
+
+A circuit breaker prevents wasting resources when the server is down. After a threshold of consecutive failures, the circuit **opens** and all sends are skipped. After a cooldown, a single **probe** request is sent. If it succeeds, the circuit closes and normal operation resumes.
+
+```ruby
+OpenTrace.configure do |c|
+  # ...
+  c.circuit_breaker_threshold = 5   # failures before opening (default: 5)
+  c.circuit_breaker_timeout   = 30  # seconds before probe (default: 30)
+end
+```
+
+### Backpressure Handling
+
+The client responds intelligently to HTTP status codes:
+
+| Status | Behavior |
+|---|---|
+| **2xx** | Success -- circuit breaker resets |
+| **429** | Rate limited -- pauses for `Retry-After` seconds (or `rate_limit_backoff`), re-enqueues the batch |
+| **401** | Auth failed -- suspends sending, prints one-time STDERR warning. Resumes after `OpenTrace.configure` |
+| **5xx** | Server error -- retried with backoff, counts toward circuit breaker |
+| **Other 4xx** | Client error -- batch dropped silently |
+
+```ruby
+OpenTrace.configure do |c|
+  # ...
+  c.rate_limit_backoff = 5.0  # fallback when Retry-After header is missing (default: 5.0)
+end
+```
 
 ### Request Summary Architecture
 

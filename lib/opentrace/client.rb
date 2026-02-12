@@ -9,6 +9,7 @@ module OpenTrace
     MAX_QUEUE_SIZE = 1000
     PAYLOAD_MAX_BYTES = 32_768 # 32 KB
     POLL_INTERVAL = 0.05 # 50ms
+    MAX_RATE_LIMIT_BACKOFF = 60 # Cap Retry-After at 60 seconds
 
     def initialize(config)
       @config = config
@@ -20,10 +21,14 @@ module OpenTrace
         failure_threshold: config.circuit_breaker_threshold,
         recovery_timeout: config.circuit_breaker_timeout
       )
+      @rate_limit_until = nil
+      @auth_suspended = false
+      @auth_failure_warned = false
     end
 
     def enqueue(payload)
       return unless @config.enabled?
+      return if @auth_suspended
 
       reset_after_fork! if forked?
 
@@ -53,6 +58,9 @@ module OpenTrace
       @mutex  = Mutex.new
       @thread = nil
       @circuit_breaker.reset!
+      @rate_limit_until = nil
+      @auth_suspended = false
+      @auth_failure_warned = false
     end
 
     def ensure_thread_running
@@ -77,6 +85,8 @@ module OpenTrace
       @uri = URI.join(@config.endpoint.chomp("/") + "/", "api/logs")
 
       loop do
+        wait_for_rate_limit if rate_limited?
+
         batch = drain_queue
         break if batch.nil?
         next if batch.empty?
@@ -85,6 +95,18 @@ module OpenTrace
       end
     rescue Exception # rubocop:disable Lint/RescueException
       # Swallow all errors including thread kill
+    end
+
+    def rate_limited?
+      @rate_limit_until && Time.now < @rate_limit_until
+    end
+
+    def wait_for_rate_limit
+      while rate_limited? && !@queue.closed?
+        remaining = @rate_limit_until - Time.now
+        break if remaining <= 0
+        sleep([remaining, 0.5].min)
+      end
     end
 
     def drain_queue
@@ -155,16 +177,63 @@ module OpenTrace
       end
 
       response = send_with_retry(json)
-
-      if response && response.is_a?(Net::HTTPSuccess)
-        @circuit_breaker.record_success
-      else
-        @circuit_breaker.record_failure
-      end
+      handle_response(response, batch)
     rescue StandardError
       @circuit_breaker.record_failure
     ensure
       Fiber[:opentrace_http_tracking_disabled] = nil
+    end
+
+    def handle_response(response, batch)
+      if response.nil?
+        @circuit_breaker.record_failure
+        return
+      end
+
+      case response
+      when Net::HTTPSuccess
+        @circuit_breaker.record_success
+      when Net::HTTPTooManyRequests
+        handle_rate_limit(response, batch)
+      when Net::HTTPUnauthorized
+        handle_auth_failure
+      when Net::HTTPServerError
+        @circuit_breaker.record_failure
+      else
+        # Other 4xx — client error, drop batch silently
+      end
+    end
+
+    def handle_rate_limit(response, batch)
+      retry_after = parse_retry_after(response)
+      @rate_limit_until = Time.now + retry_after
+
+      # Re-enqueue batch items if space allows
+      batch.each do |payload|
+        break if @queue.size >= MAX_QUEUE_SIZE
+        @queue.push(payload)
+      rescue ClosedQueueError
+        break
+      end
+    end
+
+    def parse_retry_after(response)
+      value = response["Retry-After"]&.to_f
+      if value && value > 0
+        [value, MAX_RATE_LIMIT_BACKOFF].min
+      else
+        @config.rate_limit_backoff
+      end
+    end
+
+    def handle_auth_failure
+      unless @auth_failure_warned
+        warn "[OpenTrace] Authentication failed (401). Check your api_key configuration. " \
+             "Log forwarding is suspended until reconfigured."
+        @auth_failure_warned = true
+      end
+
+      @auth_suspended = true
     end
 
     def send_with_retry(json)
@@ -206,8 +275,7 @@ module OpenTrace
     end
 
     def retryable_response?(response)
-      code = response.code.to_i
-      code >= 500 || code == 429
+      response.code.to_i >= 500
     end
 
     def calculate_backoff(attempt)
