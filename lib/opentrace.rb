@@ -4,6 +4,7 @@ require "socket"
 require "digest"
 require_relative "opentrace/version"
 require_relative "opentrace/config"
+require_relative "opentrace/stats"
 require_relative "opentrace/circuit_breaker"
 require_relative "opentrace/client"
 require_relative "opentrace/logger"
@@ -124,6 +125,21 @@ module OpenTrace
 
     def current_request_id=(id)
       Fiber[:opentrace_request_id] = id
+    end
+
+    def stats
+      return {} unless @client
+      @client.stats_snapshot
+    end
+
+    def reset_stats!
+      @client&.stats&.reset!
+    end
+
+    def healthy?
+      return false unless @client
+      snapshot = @client.stats_snapshot
+      snapshot[:circuit_state] == :closed && !snapshot[:auth_suspended]
     end
 
     def shutdown(timeout: 5)

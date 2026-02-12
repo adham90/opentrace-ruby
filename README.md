@@ -638,6 +638,52 @@ OpenTrace.configure do |c|
 end
 ```
 
+### Delivery Observability
+
+The client exposes internal delivery statistics so you can monitor the health of the log pipeline:
+
+```ruby
+OpenTrace.stats
+# => {
+#   enqueued: 15234,
+#   delivered: 15100,
+#   dropped_queue_full: 34,
+#   dropped_circuit_open: 100,
+#   dropped_auth_suspended: 0,
+#   dropped_error: 0,
+#   retries: 12,
+#   rate_limited: 2,
+#   auth_failures: 0,
+#   payload_splits: 1,
+#   batches_sent: 302,
+#   bytes_sent: 4812300,
+#   queue_size: 23,
+#   circuit_state: :closed,
+#   auth_suspended: false,
+#   uptime_seconds: 3600
+# }
+
+OpenTrace.healthy?      # true when circuit is closed and auth is not suspended
+OpenTrace.reset_stats!  # reset counters (useful after reading/reporting)
+```
+
+#### Drop Callback
+
+Register a callback to be notified when logs are dropped. The callback receives the count of dropped items and the reason:
+
+```ruby
+OpenTrace.configure do |c|
+  # ...
+  c.on_drop = ->(count, reason) {
+    StatsD.increment("opentrace.dropped", count, tags: ["reason:#{reason}"])
+  }
+end
+```
+
+Reasons: `:queue_full`, `:circuit_open`, `:auth_suspended`, `:error`
+
+The callback is called synchronously but **exceptions are always swallowed** -- a broken callback will never affect the client.
+
 ### Request Summary Architecture
 
 When `request_summary` is enabled, events within a request are **accumulated** in a Fiber-local `RequestCollector` instead of being pushed to the queue individually:

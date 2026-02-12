@@ -11,6 +11,8 @@ module OpenTrace
     POLL_INTERVAL = 0.05 # 50ms
     MAX_RATE_LIMIT_BACKOFF = 60 # Cap Retry-After at 60 seconds
 
+    attr_reader :stats
+
     def initialize(config)
       @config = config
       @queue  = Thread::Queue.new
@@ -24,19 +26,50 @@ module OpenTrace
       @rate_limit_until = nil
       @auth_suspended = false
       @auth_failure_warned = false
+      @stats = Stats.new
     end
 
     def enqueue(payload)
       return unless @config.enabled?
-      return if @auth_suspended
+
+      if @auth_suspended
+        @stats.increment(:dropped_auth_suspended)
+        fire_on_drop(1, :auth_suspended)
+        return
+      end
 
       reset_after_fork! if forked?
 
       # Drop newest if queue is full
-      return if @queue.size >= MAX_QUEUE_SIZE
+      if @queue.size >= MAX_QUEUE_SIZE
+        @stats.increment(:dropped_queue_full)
+        fire_on_drop(1, :queue_full)
+        return
+      end
 
       @queue.push(payload)
+      @stats.increment(:enqueued)
       ensure_thread_running
+    end
+
+    def queue_size
+      @queue.size
+    end
+
+    def circuit_state
+      @circuit_breaker.state
+    end
+
+    def auth_suspended?
+      @auth_suspended
+    end
+
+    def stats_snapshot
+      @stats.to_h.merge(
+        queue_size: queue_size,
+        circuit_state: circuit_state,
+        auth_suspended: @auth_suspended
+      )
     end
 
     def shutdown(timeout: 5)
@@ -61,6 +94,7 @@ module OpenTrace
       @rate_limit_until = nil
       @auth_suspended = false
       @auth_failure_warned = false
+      @stats = Stats.new
     end
 
     def ensure_thread_running
@@ -156,6 +190,8 @@ module OpenTrace
     def send_batch(batch)
       # Circuit breaker: skip if server is known-down
       unless @circuit_breaker.allow_request?
+        @stats.increment(:dropped_circuit_open, batch.size)
+        fire_on_drop(batch.size, :circuit_open)
         return
       end
 
@@ -170,6 +206,7 @@ module OpenTrace
 
       # If entire batch exceeds limit, split and retry
       if json.bytesize > PAYLOAD_MAX_BYTES
+        @stats.increment(:payload_splits)
         mid = batch.size / 2
         send_batch(batch[0...mid]) if mid > 0
         send_batch(batch[mid..]) if mid < batch.size
@@ -177,34 +214,44 @@ module OpenTrace
       end
 
       response = send_with_retry(json)
-      handle_response(response, batch)
+      handle_response(response, batch, json.bytesize)
     rescue StandardError
       @circuit_breaker.record_failure
+      @stats.increment(:dropped_error, batch.size)
+      fire_on_drop(batch.size, :error)
     ensure
       Fiber[:opentrace_http_tracking_disabled] = nil
     end
 
-    def handle_response(response, batch)
+    def handle_response(response, batch, bytes = 0)
       if response.nil?
         @circuit_breaker.record_failure
+        @stats.increment(:dropped_error, batch.size)
+        fire_on_drop(batch.size, :error)
         return
       end
 
       case response
       when Net::HTTPSuccess
         @circuit_breaker.record_success
+        @stats.increment(:delivered, batch.size)
+        @stats.increment(:batches_sent)
+        @stats.increment(:bytes_sent, bytes)
       when Net::HTTPTooManyRequests
         handle_rate_limit(response, batch)
       when Net::HTTPUnauthorized
         handle_auth_failure
       when Net::HTTPServerError
         @circuit_breaker.record_failure
+        @stats.increment(:dropped_error, batch.size)
+        fire_on_drop(batch.size, :error)
       else
         # Other 4xx — client error, drop batch silently
       end
     end
 
     def handle_rate_limit(response, batch)
+      @stats.increment(:rate_limited)
       retry_after = parse_retry_after(response)
       @rate_limit_until = Time.now + retry_after
 
@@ -227,6 +274,8 @@ module OpenTrace
     end
 
     def handle_auth_failure
+      @stats.increment(:auth_failures)
+
       unless @auth_failure_warned
         warn "[OpenTrace] Authentication failed (401). Check your api_key configuration. " \
              "Log forwarding is suspended until reconfigured."
@@ -251,12 +300,14 @@ module OpenTrace
         rescue StandardError
           # Network errors are retryable
           raise if attempts >= max_attempts
+          @stats.increment(:retries)
           sleep(calculate_backoff(attempts))
           next
         end
 
         break if attempts >= max_attempts
 
+        @stats.increment(:retries)
         sleep(calculate_backoff(attempts))
       end
 
@@ -292,6 +343,12 @@ module OpenTrace
       http.read_timeout = @config.timeout
       http.write_timeout = @config.timeout
       http
+    end
+
+    def fire_on_drop(count, reason)
+      @config.on_drop&.call(count, reason)
+    rescue StandardError
+      # Never let a callback break the client
     end
 
     def fit_payload(payload)

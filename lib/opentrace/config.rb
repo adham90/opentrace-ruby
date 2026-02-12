@@ -11,6 +11,7 @@ module OpenTrace
                   :max_retries, :retry_base_delay, :retry_max_delay,
                   :circuit_breaker_threshold, :circuit_breaker_timeout,
                   :rate_limit_backoff,
+                  :on_drop,
                   :sql_logging, :sql_duration_threshold_ms,
                   :ignore_paths,
                   :pool_monitoring, :pool_monitoring_interval,
@@ -39,6 +40,7 @@ module OpenTrace
       @circuit_breaker_threshold = 5
       @circuit_breaker_timeout   = 30
       @rate_limit_backoff = 5.0
+      @on_drop        = nil # ->(count, reason) { ... }
       @sql_logging    = true
       @sql_duration_threshold_ms = 0.0
       @ignore_paths   = []
