@@ -18,7 +18,8 @@ module OpenTrace
                   :pool_monitoring, :pool_monitoring_interval,
                   :queue_monitoring, :queue_monitoring_interval,
                   :request_summary, :timeline, :timeline_max_events,
-                  :memory_tracking, :http_tracking
+                  :memory_tracking, :http_tracking,
+                  :max_payload_bytes
 
     def initialize
       @endpoint    = nil
@@ -56,6 +57,7 @@ module OpenTrace
       @timeline_max_events = 200
       @memory_tracking = false
       @http_tracking = false
+      @max_payload_bytes = 262_144 # 256 KB
     end
 
     def valid?

@@ -10,7 +10,7 @@ require "securerandom"
 module OpenTrace
   class Client
     MAX_QUEUE_SIZE = 1000
-    PAYLOAD_MAX_BYTES = 32_768 # 32 KB
+    PAYLOAD_MAX_BYTES = 262_144 # 256 KB (default; use config.max_payload_bytes to override)
     POLL_INTERVAL = 0.05 # 50ms
     MAX_RATE_LIMIT_BACKOFF = 60 # Cap Retry-After at 60 seconds
     API_VERSION = 1
@@ -219,7 +219,7 @@ module OpenTrace
       json = JSON.generate(batch)
 
       # If entire batch exceeds limit, split and retry
-      if json.bytesize > PAYLOAD_MAX_BYTES
+      if json.bytesize > @config.max_payload_bytes
         @stats.increment(:payload_splits)
         mid = batch.size / 2
         send_batch(batch[0...mid]) if mid > 0
@@ -385,10 +385,10 @@ module OpenTrace
 
     def fit_payload(payload)
       json = JSON.generate(payload)
-      if json.bytesize > PAYLOAD_MAX_BYTES
+      if json.bytesize > @config.max_payload_bytes
         payload = truncate_payload(payload)
         json = JSON.generate(payload)
-        return nil if json.bytesize > PAYLOAD_MAX_BYTES
+        return nil if json.bytesize > @config.max_payload_bytes
       end
       payload
     rescue StandardError

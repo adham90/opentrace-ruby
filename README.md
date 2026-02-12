@@ -588,7 +588,7 @@ Your App --log()--> [In-Memory Queue] --background thread--> POST /api/logs --> 
 - `enqueue` is non-blocking -- it uses `try_lock` so it never waits on a mutex
 - The thread is started lazily on the first log call -- no threads are created at boot
 - If the queue exceeds 1,000 items, new logs are dropped (oldest are preserved)
-- Payloads exceeding 32 KB are intelligently truncated (backtrace, params, SQL removed first)
+- Payloads exceeding 256 KB (configurable via `max_payload_bytes`) are intelligently truncated (backtrace, params, SQL removed first)
 - If still too large after truncation, the payload is split and retried in smaller batches
 - Failed requests are retried with exponential backoff (up to 3 attempts by default)
 - A circuit breaker stops sending when the server is unreachable, resuming after a cooldown
@@ -694,6 +694,7 @@ OpenTrace.configure do |c|
   # ...
   c.compression = true       # enable gzip compression (default: true)
   c.compression_threshold = 1024  # only compress payloads > 1KB (default: 1024)
+  c.max_payload_bytes = 262_144   # max batch size before splitting (default: 256KB)
 end
 ```
 

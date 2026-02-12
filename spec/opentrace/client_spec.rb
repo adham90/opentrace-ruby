@@ -10,6 +10,7 @@ RSpec.describe OpenTrace::Client do
       c.enabled = true
       c.batch_size = 50
       c.flush_interval = 0.2 # fast flush for tests
+      c.compression = false  # disable in tests for predictable body parsing
     end
   end
 
@@ -179,11 +180,14 @@ RSpec.describe OpenTrace::Client do
     end
 
     it "truncates oversized payloads instead of dropping" do
-      stub = stub_request(:post, "https://opentrace.test/api/logs")
+      config.max_payload_bytes = 4096 # low limit to force truncation
+      truncate_client = described_class.new(config)
+
+      stub_request(:post, "https://opentrace.test/api/logs")
         .to_return(status: 201, body: '{"count":1}')
 
       huge_backtrace = (1..500).map { |i| "app/models/order.rb:#{i}:in `method_#{i}'" }
-      client.enqueue({
+      truncate_client.enqueue({
         level: "ERROR",
         message: "big error",
         metadata: {
@@ -206,16 +210,33 @@ RSpec.describe OpenTrace::Client do
               meta["exception_class"] == "RuntimeError"
           }
       ).to have_been_made
+
+      truncate_client.shutdown(timeout: 2)
     end
 
     it "drops truly massive payloads that can't be truncated" do
       stub = stub_request(:post, "https://opentrace.test/api/logs")
         .to_return(status: 201, body: '{"count":1}')
 
-      client.enqueue({ level: "INFO", message: "x" * 40_000, metadata: {} })
+      client.enqueue({ level: "INFO", message: "x" * 300_000, metadata: {} })
       sleep 0.5
 
       expect(stub).not_to have_been_requested
+    end
+
+    it "respects custom max_payload_bytes configuration" do
+      config.max_payload_bytes = 1024 # 1KB for this test
+      small_client = described_class.new(config)
+
+      stub = stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+
+      small_client.enqueue({ level: "INFO", message: "x" * 2000, metadata: {} })
+      sleep 0.5
+
+      # Should be dropped since message > 1KB and can't be truncated
+      expect(stub).not_to have_been_requested
+      small_client.shutdown(timeout: 2)
     end
 
     it "passes normal payloads through unchanged" do

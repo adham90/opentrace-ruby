@@ -33,6 +33,8 @@ RSpec.describe OpenTrace::LogForwarder do
         ::Logger::UNKNOWN => "UNKNOWN"
       }.each do |severity, expected_level|
         WebMock.reset!
+        stub_request(:any, /opentrace\.test/)
+          .to_return(status: 200, body: '{"count":0}')
         stub_request(:post, "https://opentrace.test/api/logs")
           .to_return(status: 201, body: '{"count":1}')
 
@@ -68,6 +70,8 @@ RSpec.describe OpenTrace::LogForwarder do
 
     it "does not forward empty messages" do
       WebMock.reset!
+      stub_request(:any, /opentrace\.test/)
+        .to_return(status: 200, body: '{"count":0}')
       stub_request(:post, "https://opentrace.test/api/logs")
         .to_return(status: 201, body: '{"count":1}')
 
@@ -82,6 +86,8 @@ RSpec.describe OpenTrace::LogForwarder do
       forwarder.level = ::Logger::WARN
 
       WebMock.reset!
+      stub_request(:any, /opentrace\.test/)
+        .to_return(status: 200, body: '{"count":0}')
       stub_request(:post, "https://opentrace.test/api/logs")
         .to_return(status: 201, body: '{"count":1}')
 
@@ -138,6 +144,8 @@ RSpec.describe OpenTrace::LogForwarder do
       f = described_class.new
 
       WebMock.reset!
+      stub_request(:any, /opentrace\.test/)
+        .to_return(status: 200, body: '{"count":0}')
       stub_request(:post, "https://opentrace.test/api/logs")
         .to_return(status: 201, body: '{"count":1}')
 
