@@ -11,7 +11,6 @@ module OpenTrace
   class Client
     MAX_QUEUE_SIZE = 1000
     PAYLOAD_MAX_BYTES = 262_144 # 256 KB (default; use config.max_payload_bytes to override)
-    POLL_INTERVAL = 0.05 # 50ms
     MAX_RATE_LIMIT_BACKOFF = 60 # Cap Retry-After at 60 seconds
     API_VERSION = 1
 
@@ -95,12 +94,13 @@ module OpenTrace
     end
 
     def reset_after_fork!
-      # After fork, the old thread/queue/mutex from the parent are dead.
+      # After fork, the old thread/queue/mutex/connection from the parent are dead.
       # Re-create everything cleanly in the child process.
       @pid    = Process.pid
       @queue  = Thread::Queue.new
       @mutex  = Mutex.new
       @thread = nil
+      @http   = nil # Parent's connection is unusable after fork
       @circuit_breaker.reset!
       @rate_limit_until = nil
       @auth_suspended = false
@@ -143,6 +143,8 @@ module OpenTrace
       end
     rescue Exception # rubocop:disable Lint/RescueException
       # Swallow all errors including thread kill
+    ensure
+      close_http
     end
 
     def rate_limited?
@@ -188,16 +190,14 @@ module OpenTrace
     end
 
     def pop_with_timeout(timeout)
-      deadline = Time.now + [timeout, 0].max
-      loop do
-        begin
-          return @queue.pop(true)
-        rescue ThreadError
-          return nil if Time.now >= deadline || @queue.closed?
-          sleep(POLL_INTERVAL)
-        end
+      if timeout <= 0
+        # Deadline already passed — still try a non-blocking pop in case
+        # items arrived while we were busy (e.g. during version check).
+        @queue.pop(true)
+      else
+        @queue.pop(timeout: timeout)
       end
-    rescue ClosedQueueError
+    rescue ThreadError, ClosedQueueError
       nil
     end
 
@@ -330,7 +330,6 @@ module OpenTrace
     end
 
     def http_post(json, batch_id: nil)
-      http = build_http(@uri)
       request = Net::HTTP::Post.new(@uri.request_uri)
       request["Authorization"] = "Bearer #{@config.api_key}"
       request["Content-Type"]  = "application/json"
@@ -345,7 +344,11 @@ module OpenTrace
         request.body = json
       end
 
-      http.request(request)
+      persistent_http.request(request)
+    rescue IOError, Errno::EPIPE, Errno::ECONNRESET, Net::OpenTimeout => _e
+      # Connection went stale — reset and retry once
+      close_http
+      persistent_http.request(request)
     end
 
     def retryable_response?(response)
@@ -359,13 +362,27 @@ module OpenTrace
       delay + jitter
     end
 
-    def build_http(uri)
-      http = Net::HTTP.new(uri.host, uri.port)
-      http.use_ssl = (uri.scheme == "https")
-      http.open_timeout = @config.timeout
-      http.read_timeout = @config.timeout
-      http.write_timeout = @config.timeout
-      http
+    # Returns a persistent Net::HTTP connection, creating one if needed.
+    # Only called from the dispatch thread — no synchronization needed.
+    def persistent_http
+      return @http if @http&.started?
+
+      @http = Net::HTTP.new(@uri.host, @uri.port)
+      @http.use_ssl = (@uri.scheme == "https")
+      @http.open_timeout = @config.timeout
+      @http.read_timeout = @config.timeout
+      @http.write_timeout = @config.timeout
+      @http.keep_alive_timeout = 30
+      @http.start
+      @http
+    end
+
+    def close_http
+      @http&.finish
+    rescue IOError
+      # Already closed
+    ensure
+      @http = nil
     end
 
     def gzip_compress(string)
@@ -421,13 +438,20 @@ module OpenTrace
       end
 
       @compatibility_checked = true
-    rescue StandardError
-      # Server might not support /api/version yet — that's fine
+    rescue Exception # rubocop:disable Lint/RescueException
+      # Server might not support /api/version yet — that's fine.
+      # Broad rescue: this is best-effort and must never kill the dispatch loop.
       @compatibility_checked = true
     end
 
+    # One-shot GET for version check. Uses a throwaway connection
+    # so a failure doesn't poison the persistent connection.
     def http_get(uri)
-      http = build_http(uri)
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = (uri.scheme == "https")
+      http.open_timeout = @config.timeout
+      http.read_timeout = @config.timeout
+      http.write_timeout = @config.timeout
       request = Net::HTTP::Get.new(uri.request_uri)
       request["User-Agent"] = "opentrace-ruby/#{OpenTrace::VERSION}"
       request["Authorization"] = "Bearer #{@config.api_key}"
