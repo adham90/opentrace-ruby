@@ -141,6 +141,12 @@ if defined?(::Rails::Railtie)
           end
         end
 
+        # External HTTP tracking (opt-in, prepends Net::HTTP)
+        if OpenTrace.config.http_tracking
+          require_relative "http_tracker"
+          Net::HTTP.prepend(OpenTrace::HttpTracker)
+        end
+
         # Start background monitors (opt-in)
         if OpenTrace.config.pool_monitoring
           require_relative "pool_monitor"
@@ -208,12 +214,14 @@ if defined?(::Rails::Railtie)
             # Compute time breakdown
             total = event.duration || 0.0
             if total > 0
-              sql_pct = ((collector.sql_total_ms / total) * 100).round(1)
-              view_pct = ((collector.view_total_ms / total) * 100).round(1)
-              other_pct = [100 - sql_pct - view_pct, 0].max.round(1)
+              sql_pct = [((collector.sql_total_ms / total) * 100).round(1), 100.0].min
+              view_pct = [((collector.view_total_ms / total) * 100).round(1), 100.0].min
+              http_pct = collector.http_count > 0 ? [((collector.http_total_ms / total) * 100).round(1), 100.0].min : 0.0
+              other_pct = [100 - sql_pct - view_pct - http_pct, 0].max.round(1)
               metadata[:time_breakdown] = {
                 sql_pct: sql_pct,
                 view_pct: view_pct,
+                http_pct: http_pct,
                 other_pct: other_pct
               }
             end

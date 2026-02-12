@@ -127,6 +127,9 @@ module OpenTrace
     end
 
     def send_batch(uri, batch)
+      # Disable HTTP tracking for our own calls to prevent infinite recursion
+      Fiber[:opentrace_http_tracking_disabled] = true
+
       # Apply per-payload truncation
       batch = batch.map { |p| fit_payload(p) }.compact
       return if batch.empty?
@@ -151,6 +154,8 @@ module OpenTrace
       http.request(request)
     rescue StandardError
       # Swallow all network errors silently
+    ensure
+      Fiber[:opentrace_http_tracking_disabled] = nil
     end
 
     def build_http(uri)

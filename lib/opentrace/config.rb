@@ -12,7 +12,8 @@ module OpenTrace
                   :ignore_paths,
                   :pool_monitoring, :pool_monitoring_interval,
                   :queue_monitoring, :queue_monitoring_interval,
-                  :request_summary, :timeline, :timeline_max_events
+                  :request_summary, :timeline, :timeline_max_events,
+                  :memory_tracking, :http_tracking
 
     def initialize
       @endpoint    = nil
@@ -38,6 +39,8 @@ module OpenTrace
       @request_summary = true
       @timeline = true
       @timeline_max_events = 200
+      @memory_tracking = false
+      @http_tracking = false
     end
 
     def valid?
