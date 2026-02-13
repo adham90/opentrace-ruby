@@ -101,7 +101,15 @@ module OpenTrace
               else
                 "INFO"
               end
-      message = "#{method} #{path} #{status} #{duration_ms.round(1)}ms"
+
+      # Use custom transaction name if set
+      transaction_name = meta.delete(:transaction_name)
+      message = if transaction_name
+                  "#{transaction_name} #{status} #{duration_ms.round(1)}ms"
+                else
+                  "#{method} #{path} #{status} #{duration_ms.round(1)}ms"
+                end
+      meta[:transaction_name] = transaction_name if transaction_name
 
       payload = {
         timestamp: format_timestamp(started),

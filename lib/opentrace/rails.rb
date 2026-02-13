@@ -15,6 +15,13 @@ if defined?(::Rails::Railtie)
       config.after_initialize do |app|
         next unless OpenTrace.enabled?
 
+        # Automatic log trace injection (opt-in) — wraps Rails logger formatter
+        if OpenTrace.config.log_trace_injection
+          require_relative "trace_formatter"
+          original_formatter = Rails.logger.formatter
+          Rails.logger.formatter = OpenTrace::TraceFormatter.new(original_formatter)
+        end
+
         # Log forwarding (opt-in) — registers LogForwarder/Logger wrapper
         if OpenTrace.config.log_forwarding
           if Rails.logger.respond_to?(:broadcast_to)
@@ -186,6 +193,20 @@ if defined?(::Rails::Railtie)
             extra[:n_plus_one_warning] = true if sql_count > 20
           end
 
+          # Capture exception cause chain (eagerly, since errors are rare)
+          exc_obj = payload[:exception_object]
+          if exc_obj&.cause
+            extra ||= {}
+            extra[:exception_causes] = OpenTrace.send(:build_cause_chain, exc_obj.cause, depth: 0)
+          end
+
+          # Capture custom transaction name
+          txn_name = Fiber[:opentrace_transaction_name]
+          if txn_name
+            extra ||= {}
+            extra[:transaction_name] = txn_name
+          end
+
           OpenTrace.client_enqueue_raw([
             :request,
             started,
@@ -288,6 +309,12 @@ if defined?(::Rails::Railtie)
             sql_duration_ms: duration,
             sql_cached: payload[:cached] || false
           }.compact
+
+          # SQL normalization (replaces literals with ? placeholders)
+          if OpenTrace.config.sql_normalization && payload[:sql]
+            metadata[:sql_normalized] = SqlNormalizer.normalize(payload[:sql])
+            metadata[:sql_fingerprint] = SqlNormalizer.fingerprint(payload[:sql])
+          end
 
           # Extract table name from SQL for easier filtering
           if payload[:sql] =~ /\b(?:FROM|INTO|UPDATE|JOIN)\s+[`"]?(\w+)[`"]?/i

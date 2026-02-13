@@ -23,7 +23,8 @@ module OpenTrace
                   :trace_propagation,
                   :log_forwarding, :view_tracking, :cache_tracking,
                   :deprecation_tracking, :detailed_request_log,
-                  :sample_rate, :sampler, :before_send
+                  :sample_rate, :sampler, :before_send,
+                  :sql_normalization, :log_trace_injection
 
     # Custom writers that invalidate the level cache
     attr_reader :min_level, :allowed_levels, :ignore_paths
@@ -88,6 +89,8 @@ module OpenTrace
       @sample_rate = 1.0     # Float 0.0-1.0, default 1.0 (all requests)
       @sampler     = nil     # Proc(env) -> Float, for per-endpoint rates
       @before_send = nil     # Proc(payload) -> payload|nil, filter/drop
+      @sql_normalization = true   # Normalize SQL queries (replace literals with ?)
+      @log_trace_injection = false # Inject trace_id/request_id into Rails logger
       @level_cache = nil
     end
 

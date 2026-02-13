@@ -66,6 +66,7 @@ module OpenTrace
       Fiber[:opentrace_trace_id] = nil
       Fiber[:opentrace_span_id] = nil
       Fiber[:opentrace_parent_span_id] = nil
+      Fiber[:opentrace_transaction_name] = nil
       OpenTrace.current_request_id = nil
     end
 

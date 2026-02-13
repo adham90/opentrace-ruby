@@ -13,6 +13,7 @@ require_relative "opentrace/middleware"
 require_relative "opentrace/trace_context"
 require_relative "opentrace/sampler"
 require_relative "opentrace/payload_builder"
+require_relative "opentrace/sql_normalizer"
 
 module OpenTrace
   LEVEL_VALUES = { "DEBUG" => 0, "INFO" => 1, "WARN" => 2, "ERROR" => 3, "FATAL" => 4 }.freeze
@@ -106,13 +107,14 @@ module OpenTrace
       meta[:exception_message] = exception.message&.slice(0, 500)
 
       if exception.backtrace
-        cleaned = if defined?(::Rails) && ::Rails.respond_to?(:backtrace_cleaner)
-                    ::Rails.backtrace_cleaner.clean(exception.backtrace)
-                  else
-                    exception.backtrace.reject { |l| l.include?("/gems/") }
-                  end
+        cleaned = clean_backtrace_for(exception)
         meta[:backtrace] = cleaned.first(15)
         meta[:error_fingerprint] = compute_error_fingerprint(exception.class.name, cleaned)
+      end
+
+      # Capture exception cause chain (max 5 deep)
+      if exception.cause
+        meta[:exception_causes] = build_cause_chain(exception.cause, depth: 0)
       end
 
       log("ERROR", exception.message.to_s, meta)
@@ -184,6 +186,17 @@ module OpenTrace
       Fiber[:opentrace_request_id] = id
     end
 
+    # Override the auto-detected transaction name for the current request.
+    def set_transaction_name(name)
+      Fiber[:opentrace_transaction_name] = name.to_s
+    rescue StandardError
+      # Never raise
+    end
+
+    def current_transaction_name
+      Fiber[:opentrace_transaction_name]
+    end
+
     def stats
       return {} unless @client
       @client.stats_snapshot
@@ -247,6 +260,42 @@ module OpenTrace
       }.compact
     rescue StandardError
       {}
+    end
+
+    MAX_CAUSE_DEPTH = 5
+
+    def build_cause_chain(exception, depth:)
+      return nil if exception.nil? || depth >= MAX_CAUSE_DEPTH
+
+      cause_entry = {
+        class: exception.class.name,
+        message: exception.message&.slice(0, 300)
+      }
+
+      if exception.backtrace
+        cleaned = clean_backtrace_for(exception)
+        cause_entry[:backtrace] = cleaned.first(5)
+        cause_entry[:origin] = cleaned.first
+      end
+
+      chain = [cause_entry]
+      if exception.cause
+        nested = build_cause_chain(exception.cause, depth: depth + 1)
+        chain.concat(nested) if nested
+      end
+      chain
+    rescue StandardError
+      nil
+    end
+
+    def clean_backtrace_for(exception)
+      if defined?(::Rails) && ::Rails.respond_to?(:backtrace_cleaner)
+        ::Rails.backtrace_cleaner.clean(exception.backtrace)
+      else
+        exception.backtrace.reject { |l| l.include?("/gems/") }
+      end
+    rescue StandardError
+      exception.backtrace || []
     end
 
     def compute_error_fingerprint(exception_class, backtrace)
