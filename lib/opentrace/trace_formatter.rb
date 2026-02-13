@@ -12,6 +12,33 @@ module OpenTrace
       @original = original_formatter || ::Logger::Formatter.new
     end
 
+    # Delegate ActiveSupport::TaggedLogging::Formatter interface to the
+    # original formatter so that Rails::Rack::Logger#push_tags works when
+    # TraceFormatter replaces the logger's formatter.
+    def push_tags(*tags)
+      @original.push_tags(*tags) if @original.respond_to?(:push_tags)
+    end
+
+    def pop_tags(count = 1)
+      @original.pop_tags(count) if @original.respond_to?(:pop_tags)
+    end
+
+    def current_tags
+      if @original.respond_to?(:current_tags)
+        @original.current_tags
+      else
+        []
+      end
+    end
+
+    def tagged(*tags)
+      if @original.respond_to?(:tagged)
+        @original.tagged(*tags) { yield }
+      else
+        yield
+      end
+    end
+
     def call(severity, datetime, progname, msg)
       formatted = @original.call(severity, datetime, progname, msg)
       trace_prefix = build_trace_prefix

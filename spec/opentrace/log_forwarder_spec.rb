@@ -166,4 +166,40 @@ RSpec.describe OpenTrace::LogForwarder do
       expect(block_evaluated).to be false
     end
   end
+
+  describe "TaggedLogging interface" do
+    it "responds to push_tags" do
+      expect(forwarder).to respond_to(:push_tags)
+    end
+
+    it "responds to pop_tags" do
+      expect(forwarder).to respond_to(:pop_tags)
+    end
+
+    it "responds to current_tags" do
+      expect(forwarder).to respond_to(:current_tags)
+    end
+
+    it "responds to tagged" do
+      expect(forwarder).to respond_to(:tagged)
+    end
+
+    it "push_tags does not raise" do
+      expect { forwarder.push_tags("request_id:abc", "host:web1") }.not_to raise_error
+    end
+
+    it "pop_tags does not raise" do
+      expect { forwarder.pop_tags(2) }.not_to raise_error
+    end
+
+    it "current_tags returns empty array" do
+      expect(forwarder.current_tags).to eq([])
+    end
+
+    it "tagged yields the forwarder" do
+      yielded = nil
+      forwarder.tagged("env:test") { |logger| yielded = logger }
+      expect(yielded).to eq(forwarder)
+    end
+  end
 end

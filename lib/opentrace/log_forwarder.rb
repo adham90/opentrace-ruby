@@ -45,6 +45,20 @@ module OpenTrace
       # no-op — nothing to close
     end
 
+    # ActiveSupport::TaggedLogging interface — BroadcastLogger delegates
+    # push_tags/pop_tags to ALL sinks. Without these, method_missing on
+    # older Rails versions forwards blindly and raises NoMethodError.
+    def push_tags(*); end
+    def pop_tags(*); end
+
+    def current_tags
+      []
+    end
+
+    def tagged(*tags)
+      yield self
+    end
+
     private
 
     def resolve_message(message, progname, &block)

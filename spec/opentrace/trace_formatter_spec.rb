@@ -106,4 +106,70 @@ RSpec.describe OpenTrace::TraceFormatter do
       end
     end
   end
+
+  describe "TaggedLogging interface" do
+    context "when original formatter supports tags" do
+      let(:tagged_formatter) do
+        f = ::Logger::Formatter.new
+        # Simulate ActiveSupport::TaggedLogging::Formatter
+        f.define_singleton_method(:push_tags) { |*tags| (@tags ||= []).concat(tags.flatten.compact.reject { |t| t.respond_to?(:empty?) && t.empty? }); @tags }
+        f.define_singleton_method(:pop_tags) { |count = 1| (@tags ||= []).pop(count) }
+        f.define_singleton_method(:current_tags) { @tags ||= [] }
+        f.define_singleton_method(:tagged) { |*tags, &blk| push_tags(*tags); blk.call; pop_tags(tags.size) }
+        f
+      end
+
+      subject(:formatter) { described_class.new(tagged_formatter) }
+
+      it "delegates push_tags to original" do
+        formatter.push_tags("request_id:abc")
+        expect(tagged_formatter.current_tags).to include("request_id:abc")
+      end
+
+      it "delegates pop_tags to original" do
+        tagged_formatter.push_tags("tag1", "tag2")
+        formatter.pop_tags(1)
+        expect(tagged_formatter.current_tags).to eq(["tag1"])
+      end
+
+      it "delegates current_tags to original" do
+        tagged_formatter.push_tags("tag1")
+        expect(formatter.current_tags).to eq(["tag1"])
+      end
+
+      it "delegates tagged to original" do
+        called = false
+        formatter.tagged("request_id:xyz") do
+          called = true
+          expect(tagged_formatter.current_tags).to include("request_id:xyz")
+        end
+        expect(called).to be true
+      end
+    end
+
+    context "when original formatter does NOT support tags" do
+      # Plain proc formatter — no push_tags/pop_tags
+      let(:original_formatter) do
+        proc { |severity, _datetime, _progname, msg| "#{severity}: #{msg}\n" }
+      end
+
+      it "push_tags is a safe no-op" do
+        expect { formatter.push_tags("tag1") }.not_to raise_error
+      end
+
+      it "pop_tags is a safe no-op" do
+        expect { formatter.pop_tags(1) }.not_to raise_error
+      end
+
+      it "current_tags returns empty array" do
+        expect(formatter.current_tags).to eq([])
+      end
+
+      it "tagged yields without error" do
+        called = false
+        formatter.tagged("tag1") { called = true }
+        expect(called).to be true
+      end
+    end
+  end
 end
