@@ -59,7 +59,17 @@ module OpenTrace
 
     def safe_path?(path)
       return false unless path.include?("/app/") || path.include?("/lib/") || path.include?("/config/")
-      File.size(path) <= MAX_FILE_SIZE
+
+      # Resolve symlinks and '..' to prevent path traversal
+      real = File.realpath(path)
+
+      # Verify the resolved path is under the application root
+      if defined?(::Rails) && ::Rails.respond_to?(:root) && ::Rails.root
+        root = ::Rails.root.to_s
+        return false unless real.start_with?("#{root}/")
+      end
+
+      File.size(real) <= MAX_FILE_SIZE
     rescue StandardError
       false
     end

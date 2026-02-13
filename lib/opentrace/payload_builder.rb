@@ -167,8 +167,13 @@ module OpenTrace
     end
 
     def run_explain(sql)
+      # Only EXPLAIN simple SELECTs — reject anything suspicious
+      normalized = sql.to_s.strip
+      return nil unless normalized.match?(/\ASELECT\b/i)
+      return nil if normalized.include?(";") # No multi-statement
+
       ActiveRecord::Base.connection_pool.with_connection do |conn|
-        result = conn.execute("EXPLAIN #{sql}")
+        result = conn.execute("EXPLAIN #{normalized}")
         rows = result.respond_to?(:rows) ? result.rows : result.map(&:values)
         rows.flatten.join("\n").slice(0, 2000)
       end

@@ -5,6 +5,13 @@ module OpenTrace
     MAX_VARS = 10
     MAX_VALUE_LENGTH = 500
 
+    SENSITIVE_PATTERNS = %w[
+      password passwd secret token api_key apikey
+      authorization auth_token access_token refresh_token
+      credit_card card_number cvv ssn private_key
+      session_id cookie credential
+    ].freeze
+
     module_function
 
     # Capture local variables from an explicit binding.
@@ -24,15 +31,20 @@ module OpenTrace
         # Skip internal variables (_, _1, etc.)
         next if name.to_s.start_with?("_")
 
-        value = binding_obj.local_variable_get(name)
-        {
-          name: name.to_s,
-          value: safe_inspect(value),
-          type: value.class.name
-        }
+        name_s = name.to_s.downcase
+        if sensitive_name?(name_s)
+          { name: name.to_s, value: "[FILTERED]", type: "filtered" }
+        else
+          value = binding_obj.local_variable_get(name)
+          { name: name.to_s, value: safe_inspect(value), type: value.class.name }
+        end
       end
     rescue StandardError
       nil
+    end
+
+    def sensitive_name?(name)
+      SENSITIVE_PATTERNS.any? { |pattern| name.include?(pattern) }
     end
 
     def safe_inspect(value)

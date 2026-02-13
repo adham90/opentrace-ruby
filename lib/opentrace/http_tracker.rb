@@ -23,7 +23,8 @@ module OpenTrace
       host = address
       port_str = (port == 443 || port == 80) ? "" : ":#{port}"
       scheme = use_ssl? ? "https" : "http"
-      url = "#{scheme}://#{host}#{port_str}#{req.path}"
+      safe_path = req.path.to_s.split("?").first
+      url = "#{scheme}://#{host}#{port_str}#{safe_path}"
 
       if collector
         collector.record_http(
