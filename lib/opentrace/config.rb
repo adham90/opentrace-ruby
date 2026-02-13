@@ -24,7 +24,8 @@ module OpenTrace
                   :log_forwarding, :view_tracking, :cache_tracking,
                   :deprecation_tracking, :detailed_request_log,
                   :sample_rate, :sampler, :before_send,
-                  :sql_normalization, :log_trace_injection
+                  :sql_normalization, :log_trace_injection,
+                  :source_context, :before_breadcrumb
 
     # Custom writers that invalidate the level cache
     attr_reader :min_level, :allowed_levels, :ignore_paths
@@ -91,6 +92,8 @@ module OpenTrace
       @before_send = nil     # Proc(payload) -> payload|nil, filter/drop
       @sql_normalization = true   # Normalize SQL queries (replace literals with ?)
       @log_trace_injection = false # Inject trace_id/request_id into Rails logger
+      @source_context = false      # Capture source code context around errors
+      @before_breadcrumb = nil     # Proc(Breadcrumb) -> Breadcrumb|nil
       @level_cache = nil
     end
 

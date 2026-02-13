@@ -14,6 +14,8 @@ require_relative "opentrace/trace_context"
 require_relative "opentrace/sampler"
 require_relative "opentrace/payload_builder"
 require_relative "opentrace/sql_normalizer"
+require_relative "opentrace/breadcrumbs"
+require_relative "opentrace/source_context"
 
 module OpenTrace
   LEVEL_VALUES = { "DEBUG" => 0, "INFO" => 1, "WARN" => 2, "ERROR" => 3, "FATAL" => 4 }.freeze
@@ -117,6 +119,22 @@ module OpenTrace
         meta[:exception_causes] = build_cause_chain(exception.cause, depth: 0)
       end
 
+      # Capture source code context for the error origin
+      if exception.backtrace && config.source_context
+        cleaned = meta[:backtrace] || clean_backtrace_for(exception)
+        app_frame = cleaned&.first
+        if app_frame
+          source = SourceContext.extract(app_frame)
+          meta[:source_context] = source if source
+        end
+      end
+
+      # Attach current breadcrumbs to error
+      buffer = Fiber[:opentrace_breadcrumbs]
+      if buffer && !buffer.empty?
+        meta[:breadcrumbs] = buffer.to_a
+      end
+
       log("ERROR", exception.message.to_s, meta)
     rescue StandardError
       # Never raise to the host app
@@ -195,6 +213,68 @@ module OpenTrace
 
     def current_transaction_name
       Fiber[:opentrace_transaction_name]
+    end
+
+    # Trace a block of code, recording its duration as a span.
+    #
+    #   OpenTrace.trace("stripe.charge") do
+    #     Stripe::Charge.create(amount: 2000, currency: "usd")
+    #   end
+    #
+    #   OpenTrace.trace("pdf.generate", resource: "Invoice") do |span|
+    #     span.set_tag(:pages, 42)
+    #     generate_invoice_pdf(order)
+    #   end
+    #
+    def trace(operation_name, resource: nil, tags: {})
+      return yield(NilSpan::INSTANCE) unless enabled?
+
+      begin
+        span = Span.new(
+          operation: operation_name,
+          resource: resource,
+          parent_span_id: Fiber[:opentrace_span_id],
+          trace_id: Fiber[:opentrace_trace_id]
+        )
+        previous_span_id = Fiber[:opentrace_span_id]
+        Fiber[:opentrace_span_id] = span.span_id
+      rescue StandardError
+        # OpenTrace setup failed — run block without tracing
+        return yield(NilSpan::INSTANCE)
+      end
+
+      begin
+        result = yield(span)
+        span.finish(tags: tags)
+        result
+      rescue => e
+        span.finish(error: e, tags: tags)
+        raise
+      ensure
+        Fiber[:opentrace_span_id] = previous_span_id
+      end
+    end
+
+    # Add a breadcrumb to the current request's trail.
+    # Breadcrumbs are attached to error payloads for debugging.
+    def add_breadcrumb(category, message, data = nil, level: "info")
+      return unless enabled?
+      buffer = Fiber[:opentrace_breadcrumbs] ||= BreadcrumbBuffer.new
+
+      crumb = Breadcrumb.new(category: category, message: message, data: data, level: level)
+      if config.before_breadcrumb
+        crumb = config.before_breadcrumb.call(crumb) rescue crumb
+        return unless crumb
+      end
+
+      buffer.add(crumb)
+    rescue StandardError
+      # Never raise
+    end
+
+    # Get the current request's breadcrumbs (for testing/debugging)
+    def current_breadcrumbs
+      Fiber[:opentrace_breadcrumbs]&.to_a || []
     end
 
     def stats
@@ -338,6 +418,58 @@ module OpenTrace
     rescue StandardError
       {}
     end
+  end
+
+  # A timed span for custom instrumentation.
+  class Span
+    attr_reader :span_id, :operation, :resource
+
+    def initialize(operation:, resource:, parent_span_id:, trace_id:)
+      @operation = operation
+      @resource = resource
+      @span_id = TraceContext.generate_span_id
+      @parent_span_id = parent_span_id
+      @trace_id = trace_id
+      @start = Process.clock_gettime(Process::CLOCK_REALTIME)
+      @tags = {}
+      @finished = false
+    end
+
+    def set_tag(key, value)
+      @tags[key] = value
+    end
+
+    def finish(error: nil, tags: {})
+      return if @finished
+      @finished = true
+      duration = Process.clock_gettime(Process::CLOCK_REALTIME) - @start
+
+      meta = @tags.merge(tags)
+      meta[:span_operation] = @operation
+      meta[:span_resource] = @resource if @resource
+      meta[:span_duration_ms] = (duration * 1000).round(2)
+
+      if error
+        meta[:exception_class] = error.class.name
+        meta[:exception_message] = error.message&.slice(0, 500)
+      end
+
+      level = error ? "ERROR" : "INFO"
+      OpenTrace.log(level, "span:#{@operation}", meta)
+
+      # Record in RequestCollector timeline if present
+      collector = Fiber[:opentrace_collector]
+      collector&.record_span(operation: @operation, duration_ms: meta[:span_duration_ms])
+    rescue StandardError
+      # Never raise
+    end
+  end
+
+  # Null object span for when OpenTrace is disabled
+  class NilSpan
+    INSTANCE = new.freeze
+    def set_tag(_, _) = nil
+    def finish(**) = nil
   end
 end
 

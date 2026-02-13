@@ -89,6 +89,12 @@ module OpenTrace
       end
     end
 
+    def record_span(operation:, duration_ms:)
+      if @timeline_enabled
+        append_timeline({ t: :span, n: operation, ms: duration_ms.round(1), at: offset_ms })
+      end
+    end
+
     def record_http(method:, url:, host:, status:, duration_ms:, error: nil)
       @http_count += 1
       @http_total_ms += duration_ms
