@@ -212,7 +212,9 @@ module OpenTrace
       nil
     end
 
-    def send_batch(batch)
+    MAX_BATCH_SPLIT_DEPTH = 5
+
+    def send_batch(batch, depth: 0)
       # Circuit breaker: skip if server is known-down
       unless @circuit_breaker.allow_request?
         @stats.increment(:dropped_circuit_open, batch.size)
@@ -246,12 +248,17 @@ module OpenTrace
 
       json = JSON.generate(batch)
 
-      # If entire batch exceeds limit, split and retry
+      # If entire batch exceeds limit, split and retry (with depth guard)
       if json.bytesize > @config.max_payload_bytes
+        if depth >= MAX_BATCH_SPLIT_DEPTH
+          @stats.increment(:dropped_oversized, batch.size)
+          fire_on_drop(batch.size, :oversized)
+          return
+        end
         @stats.increment(:payload_splits)
         mid = batch.size / 2
-        send_batch(batch[0...mid]) if mid > 0
-        send_batch(batch[mid..]) if mid < batch.size
+        send_batch(batch[0...mid], depth: depth + 1) if mid > 0
+        send_batch(batch[mid..], depth: depth + 1) if mid < batch.size
         return
       end
 

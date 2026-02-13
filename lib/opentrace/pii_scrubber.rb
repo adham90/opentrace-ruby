@@ -5,8 +5,8 @@ module OpenTrace
     REDACTED = "[REDACTED]"
 
     PATTERNS = {
-      credit_card: /\b(?:\d[ -]*?){13,19}\b/,
-      email: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/,
+      credit_card: /\b(?:\d[ -]*?){13,16}\b/,
+      email: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/,
       ssn: /\b\d{3}-\d{2}-\d{4}\b/,
       phone: /\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/,
       bearer_token: /Bearer\s+[A-Za-z0-9\-._~+\/]+=*/,
