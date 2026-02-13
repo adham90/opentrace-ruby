@@ -25,7 +25,10 @@ module OpenTrace
                   :deprecation_tracking, :detailed_request_log,
                   :sample_rate, :sampler, :before_send,
                   :sql_normalization, :log_trace_injection,
-                  :source_context, :before_breadcrumb
+                  :source_context, :before_breadcrumb,
+                  :pii_scrubbing, :pii_patterns, :pii_disabled_patterns,
+                  :session_tracking,
+                  :on_error, :after_send
 
     # Custom writers that invalidate the level cache
     attr_reader :min_level, :allowed_levels, :ignore_paths
@@ -94,6 +97,12 @@ module OpenTrace
       @log_trace_injection = false # Inject trace_id/request_id into Rails logger
       @source_context = false      # Capture source code context around errors
       @before_breadcrumb = nil     # Proc(Breadcrumb) -> Breadcrumb|nil
+      @pii_scrubbing = false       # Scrub PII from metadata before sending
+      @pii_patterns = nil          # Array of additional Regexp patterns
+      @pii_disabled_patterns = nil # Array of Symbol pattern names to skip
+      @session_tracking = false    # Extract session ID from cookies
+      @on_error = nil              # Proc(exception, metadata) — called on error capture
+      @after_send = nil            # Proc(batch_size, bytes) — called after successful delivery
       @level_cache = nil
     end
 

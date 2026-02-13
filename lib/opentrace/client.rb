@@ -234,6 +234,12 @@ module OpenTrace
             next nil
           end
         end
+        # PII scrubbing (runs on background thread)
+        if @config.pii_scrubbing && payload[:metadata]
+          active_patterns = build_pii_patterns
+          PiiScrubber.scrub!(payload[:metadata], patterns: active_patterns)
+        end
+
         fit_payload(payload)
       end
       return if batch.empty?
@@ -273,6 +279,7 @@ module OpenTrace
         @stats.increment(:delivered, batch.size)
         @stats.increment(:batches_sent)
         @stats.increment(:bytes_sent, bytes)
+        @config.after_send&.call(batch.size, bytes) rescue nil
       when Net::HTTPTooManyRequests
         handle_rate_limit(response, batch)
       when Net::HTTPUnauthorized
@@ -414,6 +421,22 @@ module OpenTrace
       gz.write(string)
       gz.close
       io.string
+    end
+
+    def build_pii_patterns
+      patterns = PiiScrubber::PATTERNS.dup
+      # Remove disabled patterns
+      if @config.pii_disabled_patterns
+        @config.pii_disabled_patterns.each { |name| patterns.delete(name) }
+      end
+      result = patterns.values
+      # Add custom patterns
+      if @config.pii_patterns
+        result.concat(@config.pii_patterns)
+      end
+      result
+    rescue StandardError
+      PiiScrubber::PATTERNS.values
     end
 
     def fire_on_drop(count, reason)

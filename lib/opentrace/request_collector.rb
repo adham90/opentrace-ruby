@@ -37,6 +37,8 @@ module OpenTrace
       @memory_before = nil
       @memory_after = nil
 
+      @sql_fingerprints = {}  # fingerprint => count
+
       if @timeline_enabled
         @timeline = []
         @request_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -45,13 +47,18 @@ module OpenTrace
       end
     end
 
-    def record_sql(name:, duration_ms:, table: nil)
+    def record_sql(name:, duration_ms:, table: nil, fingerprint: nil)
       @sql_count += 1
       @sql_total_ms += duration_ms
 
       if duration_ms > @sql_slowest_ms
         @sql_slowest_ms = duration_ms
         @sql_slowest_name = name
+      end
+
+      # Track duplicate queries by fingerprint
+      if fingerprint && @sql_fingerprints.size < 100
+        @sql_fingerprints[fingerprint] = (@sql_fingerprints[fingerprint] || 0) + 1
       end
 
       if @timeline_enabled
@@ -128,6 +135,18 @@ module OpenTrace
         n_plus_one_warning: @sql_count > 20 ? true : nil,
         timeline: (@timeline.nil? || @timeline.empty?) ? nil : @timeline
       }
+
+      # Duplicate query detection
+      duplicates = @sql_fingerprints.select { |_, count| count > 1 }
+      unless duplicates.empty?
+        result[:duplicate_queries] = duplicates.size
+        result[:worst_duplicate_count] = duplicates.values.max
+        result[:top_duplicates] = duplicates
+          .sort_by { |_, count| -count }
+          .first(3)
+          .map { |fp, count| { fingerprint: fp, count: count } }
+        result[:n_plus_one_warning] = true if duplicates.values.max > 5
+      end
 
       # HTTP stats (only present if calls were made)
       if @http_count > 0

@@ -74,9 +74,10 @@ if defined?(::Rails::Railtie)
               Fiber[:opentrace_sql_total_ms] = (Fiber[:opentrace_sql_total_ms] || 0.0) + duration_ms
             end
 
-            # Feed RequestCollector for summary
+            # Feed RequestCollector for summary (with fingerprint for duplicate detection)
             if collector
-              collector.record_sql(name: sql_name, duration_ms: duration_ms)
+              fp = raw_sql ? simple_sql_fingerprint(raw_sql) : nil
+              collector.record_sql(name: sql_name, duration_ms: duration_ms, fingerprint: fp)
             end
 
             # Forward individual SQL log (opt-in)
@@ -205,6 +206,13 @@ if defined?(::Rails::Railtie)
           if txn_name
             extra ||= {}
             extra[:transaction_name] = txn_name
+          end
+
+          # Capture session ID
+          session_id = Fiber[:opentrace_session_id]
+          if session_id
+            extra ||= {}
+            extra[:session_id] = session_id
           end
 
           OpenTrace.client_enqueue_raw([
@@ -393,6 +401,13 @@ if defined?(::Rails::Railtie)
           else
             backtrace.reject { |line| line.include?("/gems/") }
           end
+        end
+
+        def simple_sql_fingerprint(sql)
+          normalized = sql.gsub(/'[^']*'/, "?").gsub(/\b\d+\b/, "?")
+          Digest::MD5.hexdigest(normalized)[0, 8]
+        rescue StandardError
+          nil
         end
 
         def ignored_path?(path)

@@ -16,6 +16,7 @@ require_relative "opentrace/payload_builder"
 require_relative "opentrace/sql_normalizer"
 require_relative "opentrace/breadcrumbs"
 require_relative "opentrace/source_context"
+require_relative "opentrace/pii_scrubber"
 
 module OpenTrace
   LEVEL_VALUES = { "DEBUG" => 0, "INFO" => 1, "WARN" => 2, "ERROR" => 3, "FATAL" => 4 }.freeze
@@ -134,6 +135,9 @@ module OpenTrace
       if buffer && !buffer.empty?
         meta[:breadcrumbs] = buffer.to_a
       end
+
+      # Fire on_error callback
+      config.on_error&.call(exception, meta) rescue nil
 
       log("ERROR", exception.message.to_s, meta)
     rescue StandardError
