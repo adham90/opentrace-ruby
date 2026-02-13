@@ -145,6 +145,19 @@ RSpec.describe OpenTrace::TraceFormatter do
         end
         expect(called).to be true
       end
+
+      it "delegates clear_tags! to original" do
+        tagged_formatter.define_singleton_method(:clear_tags!) { (@tags ||= []).clear }
+        tagged_formatter.push_tags("tag1", "tag2")
+        formatter.clear_tags!
+        expect(tagged_formatter.current_tags).to eq([])
+      end
+
+      it "delegates tags_text to original" do
+        tagged_formatter.define_singleton_method(:tags_text) { "[#{(@tags || []).join('] [')}] " }
+        tagged_formatter.push_tags("env:test")
+        expect(formatter.tags_text).to include("env:test")
+      end
     end
 
     context "when original formatter does NOT support tags" do
@@ -169,6 +182,14 @@ RSpec.describe OpenTrace::TraceFormatter do
         called = false
         formatter.tagged("tag1") { called = true }
         expect(called).to be true
+      end
+
+      it "clear_tags! is a safe no-op" do
+        expect { formatter.clear_tags! }.not_to raise_error
+      end
+
+      it "tags_text returns empty string" do
+        expect(formatter.tags_text).to eq("")
       end
     end
   end

@@ -50,14 +50,21 @@ module OpenTrace
     # older Rails versions forwards blindly and raises NoMethodError.
     def push_tags(*); end
     def pop_tags(*); end
+    def clear_tags!; end
 
     def current_tags
       []
     end
 
+    def tags_text
+      ""
+    end
+
     def tagged(*tags)
       yield self
     end
+
+    def flush; end
 
     private
 

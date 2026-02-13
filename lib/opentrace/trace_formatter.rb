@@ -39,6 +39,18 @@ module OpenTrace
       end
     end
 
+    def clear_tags!
+      @original.clear_tags! if @original.respond_to?(:clear_tags!)
+    end
+
+    def tags_text
+      if @original.respond_to?(:tags_text)
+        @original.tags_text
+      else
+        ""
+      end
+    end
+
     def call(severity, datetime, progname, msg)
       formatted = @original.call(severity, datetime, progname, msg)
       trace_prefix = build_trace_prefix

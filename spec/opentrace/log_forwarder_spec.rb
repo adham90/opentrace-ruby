@@ -201,5 +201,17 @@ RSpec.describe OpenTrace::LogForwarder do
       forwarder.tagged("env:test") { |logger| yielded = logger }
       expect(yielded).to eq(forwarder)
     end
+
+    it "clear_tags! does not raise" do
+      expect { forwarder.clear_tags! }.not_to raise_error
+    end
+
+    it "tags_text returns empty string" do
+      expect(forwarder.tags_text).to eq("")
+    end
+
+    it "flush does not raise" do
+      expect { forwarder.flush }.not_to raise_error
+    end
   end
 end
