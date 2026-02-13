@@ -13,6 +13,13 @@ module OpenTrace
       # When OpenTrace is disabled, pass through with zero overhead
       return @app.call(env) unless OpenTrace.enabled?
 
+      # Sampling: skip ALL Fiber-local setup for unsampled requests.
+      # Subscribers check Fiber-locals and return instantly when nil.
+      unless OpenTrace.sampler.sample?(env)
+        OpenTrace.send(:client).stats.increment(:sampled_out)
+        return @app.call(env)
+      end
+
       request_id = env["action_dispatch.request_id"] || env["HTTP_X_REQUEST_ID"]
       OpenTrace.current_request_id = request_id
       Fiber[:opentrace_sql_count] = 0

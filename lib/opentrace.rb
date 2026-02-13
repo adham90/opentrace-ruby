@@ -11,13 +11,38 @@ require_relative "opentrace/logger"
 require_relative "opentrace/log_forwarder"
 require_relative "opentrace/middleware"
 require_relative "opentrace/trace_context"
+require_relative "opentrace/sampler"
+require_relative "opentrace/payload_builder"
 
 module OpenTrace
   LEVEL_VALUES = { "DEBUG" => 0, "INFO" => 1, "WARN" => 2, "ERROR" => 3, "FATAL" => 4 }.freeze
 
+  # Null object for when OpenTrace is not configured.
+  # All methods are no-ops, avoiding nil checks on the hot path.
+  class NilClient
+    def enqueue(_) = nil
+    def shutdown(timeout: 5) = nil
+    def queue_size = 0
+    def circuit_state = :closed
+    def auth_suspended? = false
+    def stats_snapshot = { queue_size: 0, circuit_state: :closed, auth_suspended: false }
+    def stats = NilStats.new
+    def supports?(_) = false
+  end
+
+  class NilStats
+    def increment(_, _ = 1) = nil
+    def get(_) = 0
+    def to_h = { uptime_seconds: 0 }
+    def reset! = nil
+  end
+
+  NULL_CLIENT = NilClient.new.freeze
+
   class << self
     def configure
       yield config
+      config.finalize!
       reset_client!
     end
 
@@ -25,9 +50,16 @@ module OpenTrace
       @config ||= Config.new
     end
 
+    def sampler
+      @sampler ||= Sampler.new(config)
+    end
+
+    # Push a deferred log entry as a frozen Array.
+    # All heavy work (Hash building, timestamp formatting, context merge)
+    # is deferred to the background dispatch thread via PayloadBuilder.
     def log(level, message, metadata = {}, request_summary: nil)
       return unless enabled?
-      return unless level_meets_threshold?(level)
+      return unless config.level_allowed?(level)
 
       # Re-entrance guard: prevent recursive logging if the context proc
       # or any subscriber triggers another log call (e.g. via ActiveRecord)
@@ -35,40 +67,30 @@ module OpenTrace
       Fiber[:opentrace_logging] = true
 
       begin
-        # 1. Start with user-defined context (lowest priority)
-        #    Cached per-request to avoid repeated expensive evaluations
-        #    (e.g. Browser.new for UA parsing, DB queries, etc.)
-        meta = resolve_context
+        # Read cached context (set by middleware) or resolve fresh
+        ctx = Fiber[:opentrace_cached_context]
+        unless ctx
+          ctx = resolve_context_raw
+          # Cache if inside a request (middleware sets request_id)
+          if Fiber[:opentrace_request_id]
+            ctx = (ctx.is_a?(Hash) ? ctx : {}).freeze
+            Fiber[:opentrace_cached_context] = ctx
+          end
+        end
 
-        # 2. Merge caller-provided metadata (overrides context)
-        meta.merge!(metadata) if metadata.is_a?(Hash)
-
-        # 3. Static context — only fills in keys not already set
-        static_context.each { |k, v| meta[k] ||= v }
-
-        # 4. Request ID from middleware (if not already set by caller or context)
-        meta[:request_id] ||= current_request_id if current_request_id
-
-        # Extract trace_id to top level before building payload
-        trace_id = meta.delete(:trace_id)
-        # Use Fiber-local trace context (set by middleware) if not explicitly provided
-        trace_id ||= Fiber[:opentrace_trace_id]
-
-        payload = {
-          timestamp: Time.now.utc.strftime("%Y-%m-%dT%H:%M:%S.%6NZ"),
-          level: level.to_s.upcase,
-          service: config.service,
-          environment: config.environment,
-          message: message.to_s,
-          metadata: meta.compact
-        }
-
-        payload[:trace_id] = trace_id.to_s if trace_id
-        payload[:span_id] = Fiber[:opentrace_span_id] if Fiber[:opentrace_span_id]
-        payload[:parent_span_id] = Fiber[:opentrace_parent_span_id] if Fiber[:opentrace_parent_span_id]
-        payload[:request_summary] = request_summary if request_summary
-
-        client.enqueue(payload)
+        client.enqueue([
+          Process.clock_gettime(Process::CLOCK_REALTIME), # float timestamp
+          level,
+          message,
+          metadata,
+          ctx,
+          Fiber[:opentrace_request_id],
+          Fiber[:opentrace_trace_id],
+          Fiber[:opentrace_span_id],
+          Fiber[:opentrace_parent_span_id],
+          request_summary,
+          nil # event_type
+        ].freeze)
       ensure
         Fiber[:opentrace_logging] = nil
       end
@@ -104,31 +126,40 @@ module OpenTrace
       Fiber[:opentrace_logging] = true
 
       begin
-        meta = resolve_context
-        meta.merge!(metadata) if metadata.is_a?(Hash)
-        static_context.each { |k, v| meta[k] ||= v }
-        meta[:request_id] ||= current_request_id if current_request_id
+        ctx = Fiber[:opentrace_cached_context]
+        unless ctx
+          ctx = resolve_context_raw
+          if Fiber[:opentrace_request_id]
+            ctx = (ctx.is_a?(Hash) ? ctx : {}).freeze
+            Fiber[:opentrace_cached_context] = ctx
+          end
+        end
 
-        trace_id = meta.delete(:trace_id)
-        trace_id ||= Fiber[:opentrace_trace_id]
-
-        payload = {
-          timestamp: Time.now.utc.strftime("%Y-%m-%dT%H:%M:%S.%6NZ"),
-          level: "INFO",
-          event_type: event_type.to_s,
-          service: config.service,
-          environment: config.environment,
-          message: message.to_s,
-          metadata: meta.compact
-        }
-        payload[:trace_id] = trace_id.to_s if trace_id
-        payload[:span_id] = Fiber[:opentrace_span_id] if Fiber[:opentrace_span_id]
-        payload[:parent_span_id] = Fiber[:opentrace_parent_span_id] if Fiber[:opentrace_parent_span_id]
-
-        client.enqueue(payload)
+        client.enqueue([
+          Process.clock_gettime(Process::CLOCK_REALTIME),
+          "INFO",
+          message,
+          metadata,
+          ctx,
+          Fiber[:opentrace_request_id],
+          Fiber[:opentrace_trace_id],
+          Fiber[:opentrace_span_id],
+          Fiber[:opentrace_parent_span_id],
+          nil, # request_summary
+          event_type # event_type
+        ].freeze)
       ensure
         Fiber[:opentrace_logging] = nil
       end
+    rescue StandardError
+      # Never raise to the host app
+    end
+
+    # Push a raw entry (e.g. :request array) directly to the client queue.
+    # Used by Rails subscribers to bypass OpenTrace.log overhead.
+    def client_enqueue_raw(entry)
+      return unless enabled?
+      client.enqueue(entry)
     rescue StandardError
       # Never raise to the host app
     end
@@ -177,6 +208,7 @@ module OpenTrace
       @config = nil
       @client = nil
       @static_context = nil
+      @sampler = nil
       @at_exit_registered = nil
     end
 
@@ -184,7 +216,7 @@ module OpenTrace
 
     def client
       @client ||= begin
-        c = Client.new(config)
+        c = Client.new(config, sampler: sampler)
         register_at_exit_hook!
         c
       end
@@ -200,6 +232,7 @@ module OpenTrace
       @client&.shutdown(timeout: 1)
       @client = nil
       @static_context = nil
+      @sampler = nil
     end
 
     def level_meets_threshold?(level)
@@ -226,20 +259,27 @@ module OpenTrace
       nil
     end
 
+    # Resolve context without dup (for capturing in deferred arrays).
+    # The frozen/unfrozen Hash is captured by reference; PayloadBuilder
+    # will dup it when materializing on the background thread.
+    def resolve_context_raw
+      case config.context
+      when Proc then config.context.call
+      when Hash then config.context
+      end
+    rescue StandardError
+      {}
+    end
+
+    # Legacy resolve_context kept for backward compat if any external code calls it.
+    # Returns a mutable dup safe for the caller to modify.
     def resolve_context
-      # Cache context per-request when inside middleware (Fiber-local).
-      # The context proc may do expensive work (DB queries, UA parsing,
-      # object allocations) that should only happen once per request.
       cached = Fiber[:opentrace_cached_context]
       return cached.dup if cached
 
-      ctx = case config.context
-            when Proc then config.context.call
-            when Hash then config.context
-            end
+      ctx = resolve_context_raw
       result = ctx.is_a?(Hash) ? ctx : {}
 
-      # Only cache when inside a request (middleware sets request_id)
       if Fiber[:opentrace_request_id]
         Fiber[:opentrace_cached_context] = result.freeze
         return result.dup
@@ -247,7 +287,7 @@ module OpenTrace
 
       result.dup
     rescue StandardError
-      {} # Broken proc? Swallow, never crash.
+      {}
     end
   end
 end

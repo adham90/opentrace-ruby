@@ -106,8 +106,9 @@ RSpec.describe OpenTrace::Stats do
     it "includes all expected counter names" do
       expected = %i[
         enqueued delivered dropped_queue_full dropped_circuit_open
-        dropped_auth_suspended dropped_error retries rate_limited
+        dropped_auth_suspended dropped_error dropped_filtered retries rate_limited
         auth_failures payload_splits batches_sent bytes_sent
+        sampled_out sql_filtered
       ]
       expect(OpenTrace::Stats::COUNTERS).to match_array(expected)
     end

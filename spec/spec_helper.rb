@@ -58,6 +58,10 @@ def configure_opentrace!(overrides = {})
     c.detailed_request_log = overrides[:detailed_request_log] if overrides.key?(:detailed_request_log)
     c.timeline             = overrides[:timeline]             if overrides.key?(:timeline)
     c.timeline_max_events  = overrides[:timeline_max_events]  if overrides.key?(:timeline_max_events)
+    c.sample_rate          = overrides[:sample_rate]          if overrides.key?(:sample_rate)
+    c.sampler              = overrides[:sampler]              if overrides.key?(:sampler)
+    c.before_send          = overrides[:before_send]          if overrides.key?(:before_send)
+    c.ignore_paths         = overrides[:ignore_paths]         if overrides.key?(:ignore_paths)
   end
 end
 

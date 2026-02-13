@@ -3,6 +3,8 @@
 if defined?(::Rails::Railtie)
   module OpenTrace
     class Railtie < ::Rails::Railtie
+      SKIP_SQL_NAMES = Set.new(%w[SCHEMA EXPLAIN]).freeze
+
       # Use config.after_initialize so that config/initializers/ files
       # (where the user calls OpenTrace.configure) have already run.
       # Register middleware early — before the stack is frozen
@@ -27,33 +29,47 @@ if defined?(::Rails::Railtie)
           end
         end
 
-        # Subscribe to controller request notifications — always on
+        # Subscribe to controller request notifications — push deferred :request array
         ActiveSupport::Notifications.subscribe("process_action.action_controller") do |name, started, finished, id, payload|
           forward_request_log(name, started, finished, id, payload)
         rescue StandardError
           # Swallow - never affect the host app
         end
 
-        # SQL subscriber — lightweight counter + optional forwarding
+        # SQL subscriber — lightweight counter + optional forwarding with filtering
         sql_logging = OpenTrace.config.sql_logging
         ActiveSupport::Notifications.subscribe("sql.active_record") do |name, started, finished, id, payload|
           sql_count = Fiber[:opentrace_sql_count]
           collector = Fiber[:opentrace_collector]
 
           if sql_count || collector || sql_logging
+            # Filter useless queries that fire dozens of times per request
+            sql_name = payload[:name]
+            if SKIP_SQL_NAMES.include?(sql_name)
+              next
+            end
+
+            raw_sql = payload[:sql]
+            if raw_sql && (raw_sql.start_with?("PRAGMA") ||
+                           raw_sql.start_with?("BEGIN") ||
+                           raw_sql.start_with?("COMMIT") ||
+                           raw_sql.start_with?("ROLLBACK") ||
+                           raw_sql.start_with?("SAVEPOINT") ||
+                           raw_sql.start_with?("RELEASE"))
+              next
+            end
+
             duration_ms = (finished && started) ? (finished - started) * 1000.0 : 0.0
 
-            # Increment per-request SQL counter (~1-5μs)
+            # Increment per-request SQL counter
             if sql_count
               Fiber[:opentrace_sql_count] = sql_count + 1
               Fiber[:opentrace_sql_total_ms] = (Fiber[:opentrace_sql_total_ms] || 0.0) + duration_ms
             end
 
-            # Feed RequestCollector for summary (no table extraction on hot path)
+            # Feed RequestCollector for summary
             if collector
-              unless payload[:name] == "SCHEMA"
-                collector.record_sql(name: payload[:name], duration_ms: duration_ms)
-              end
+              collector.record_sql(name: sql_name, duration_ms: duration_ms)
             end
 
             # Forward individual SQL log (opt-in)
@@ -65,10 +81,10 @@ if defined?(::Rails::Railtie)
           # Swallow
         end
 
-        # Subscribe to ActiveJob notifications — always on
-        ActiveSupport::Notifications.subscribe("perform.active_job") do |*args|
-          event = ActiveSupport::Notifications::Event.new(*args)
-          forward_job_log(event)
+        # Subscribe to ActiveJob notifications — raw args, no Event.new allocation
+        ActiveSupport::Notifications.subscribe("perform.active_job") do |name, started, finished, id, payload|
+          duration_ms = (finished && started) ? (finished - started) * 1000.0 : 0.0
+          forward_job_log(payload, duration_ms)
         rescue StandardError
           # Swallow
         end
@@ -152,124 +168,51 @@ if defined?(::Rails::Railtie)
           return unless OpenTrace.enabled?
           return if ignored_path?(payload[:path])
 
-          duration_ms = (finished && started) ? (finished - started) * 1000.0 : 0.0
-
-          metadata = {
-            request_id: payload[:headers]&.env&.dig("action_dispatch.request_id")
-          }.compact
-
-          # User ID from cached context only (never calls controller.current_user)
-          user_id = extract_user_id
-          metadata[:user_id] = user_id if user_id
-
-          # Exception auto-capture with fingerprinting (always on)
-          if payload[:exception]
-            metadata[:exception_class]   = payload[:exception][0]
-            metadata[:exception_message] = truncate(payload[:exception][1], 500)
-          end
-
-          if payload[:exception_object]&.backtrace
-            cleaned = clean_backtrace(payload[:exception_object].backtrace)
-            metadata[:backtrace] = cleaned.first(15)
-            metadata[:error_fingerprint] = OpenTrace.send(:compute_error_fingerprint,
-              payload[:exception][0], cleaned)
-          end
+          extra = nil
 
           # Detailed request info (opt-in)
           if OpenTrace.config.detailed_request_log
-            extract_params(payload, metadata)
-            extract_request_headers(payload, metadata)
+            extra = {}
+            extract_params(payload, extra)
+            extract_request_headers(payload, extra)
           end
 
-          # Build structured request_summary from collector (or fall back to Fiber-locals)
-          request_summary = nil
-          collector = Fiber[:opentrace_collector]
-          if collector
-            summary = collector.summary
-            request_summary = {
-              controller: payload[:controller],
-              action: payload[:action],
-              method: payload[:method],
-              path: payload[:path],
-              status: payload[:status],
-              duration_ms: duration_ms.round(1),
-              sql_count: summary[:sql_query_count],
-              sql_total_ms: summary[:sql_total_ms],
-              sql_slowest_ms: summary[:sql_slowest_ms],
-              sql_slowest_name: summary[:sql_slowest_name],
-              n_plus_one: summary[:n_plus_one_warning] || false,
-              view_count: summary[:view_render_count],
-              view_total_ms: summary[:view_total_ms],
-              view_slowest_ms: summary[:view_slowest_ms],
-              view_slowest_template: summary[:view_slowest_template],
-              cache_reads: summary[:cache_reads],
-              cache_hits: summary[:cache_hits],
-              cache_writes: summary[:cache_writes],
-              cache_hit_ratio: summary[:cache_hit_ratio],
-              http_external_count: summary[:http_external_count],
-              http_external_total_ms: summary[:http_external_total_ms],
-              http_slowest_ms: summary[:http_slowest_ms],
-              http_slowest_host: summary[:http_slowest_host],
-              memory_before_mb: summary[:memory_before_mb],
-              memory_after_mb: summary[:memory_after_mb],
-              memory_delta_mb: summary[:memory_delta_mb],
-              timeline: summary[:timeline]
-            }.compact
-
-            # Compute time breakdown
-            if duration_ms > 0
-              sql_pct = [((collector.sql_total_ms / duration_ms) * 100).round(1), 100.0].min
-              view_pct = [((collector.view_total_ms / duration_ms) * 100).round(1), 100.0].min
-              http_pct = collector.http_count > 0 ? [((collector.http_total_ms / duration_ms) * 100).round(1), 100.0].min : 0.0
-              other_pct = [100 - sql_pct - view_pct - http_pct, 0].max.round(1)
-              request_summary[:time_breakdown] = {
-                sql_pct: sql_pct,
-                view_pct: view_pct,
-                http_pct: http_pct,
-                other_pct: other_pct
-              }
-            end
-          elsif Fiber[:opentrace_sql_count]
-            # Fallback: Fiber-local counters when no collector
-            metadata[:controller] = payload[:controller]
-            metadata[:action] = payload[:action]
-            metadata[:method] = payload[:method]
-            metadata[:path] = payload[:path]
-            metadata[:status] = payload[:status]
-            metadata[:duration_ms] = duration_ms.round(1)
-            metadata[:sql_query_count] = Fiber[:opentrace_sql_count]
-            metadata[:sql_total_ms] = Fiber[:opentrace_sql_total_ms]&.round(1)
-            metadata[:n_plus_one_warning] = true if Fiber[:opentrace_sql_count] > 20
-          else
-            # No collector, no Fiber-locals — include request identity in metadata
-            metadata[:controller] = payload[:controller]
-            metadata[:action] = payload[:action]
-            metadata[:method] = payload[:method]
-            metadata[:path] = payload[:path]
-            metadata[:status] = payload[:status]
-            metadata[:duration_ms] = duration_ms.round(1)
+          # SQL counters for non-collector path (only present for sampled requests)
+          sql_count = Fiber[:opentrace_sql_count]
+          if sql_count && !Fiber[:opentrace_collector]
+            extra ||= {}
+            extra[:sql_query_count] = sql_count
+            extra[:sql_total_ms] = Fiber[:opentrace_sql_total_ms]&.round(1)
+            extra[:n_plus_one_warning] = true if sql_count > 20
           end
 
-          level = if payload[:exception]
-                    "ERROR"
-                  elsif payload[:status].to_i >= 500
-                    "ERROR"
-                  elsif payload[:status].to_i >= 400
-                    "WARN"
-                  else
-                    "INFO"
-                  end
-          message = "#{payload[:method]} #{payload[:path]} #{payload[:status]} #{duration_ms.round(1)}ms"
-
-          OpenTrace.log(level, message, metadata, request_summary: request_summary)
+          OpenTrace.client_enqueue_raw([
+            :request,
+            started,
+            finished,
+            payload[:controller],
+            payload[:action],
+            payload[:method],
+            payload[:path],
+            payload[:status],
+            payload[:exception]&.first,
+            payload[:exception]&.last,
+            payload[:exception_object]&.backtrace,
+            Fiber[:opentrace_request_id] || payload[:headers]&.env&.dig("action_dispatch.request_id"),
+            Fiber[:opentrace_trace_id],
+            Fiber[:opentrace_span_id],
+            Fiber[:opentrace_parent_span_id],
+            Fiber[:opentrace_cached_context],
+            Fiber[:opentrace_collector],
+            extra
+          ].freeze)
         rescue StandardError
           # Swallow
         end
 
-        def forward_job_log(event)
+        def forward_job_log(payload, duration_ms)
           return unless OpenTrace.enabled?
 
-          payload = event.payload
           job = payload[:job]
 
           metadata = {
@@ -277,7 +220,7 @@ if defined?(::Rails::Railtie)
             job_id: job.respond_to?(:job_id) ? job.job_id : nil,
             queue_name: job.respond_to?(:queue_name) ? job.queue_name : nil,
             executions: job.respond_to?(:executions) ? job.executions : nil,
-            duration_ms: event.duration&.round(1)
+            duration_ms: duration_ms&.round(1)
           }.compact
 
           # Queue latency calculation
@@ -319,7 +262,7 @@ if defined?(::Rails::Railtie)
           message = if payload[:exception_object]
                       "Job #{job.class.name} FAILED (attempt #{job.respond_to?(:executions) ? job.executions : '?'})"
                     else
-                      "Job #{job.class.name} completed #{event.duration&.round(1)}ms"
+                      "Job #{job.class.name} completed #{duration_ms&.round(1)}ms"
                     end
 
           OpenTrace.log(level, message, metadata)

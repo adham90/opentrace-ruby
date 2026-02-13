@@ -9,28 +9,34 @@ module OpenTrace
       dropped_circuit_open
       dropped_auth_suspended
       dropped_error
+      dropped_filtered
       retries
       rate_limited
       auth_failures
       payload_splits
       batches_sent
       bytes_sent
+      sampled_out
+      sql_filtered
     ].freeze
 
     def initialize
-      @counters = COUNTERS.each_with_object({}) { |k, h| h[k] = 0 }
+      @counters = COUNTERS.each_with_object(Hash.new(0)) { |k, h| h[k] = 0 }
       @mutex = Mutex.new
       @started_at = Time.now
     end
 
+    # Hot path: no mutex. Under CRuby's GIL, Hash#[]= with integer
+    # increment is effectively atomic for single operations.
     def increment(counter, amount = 1)
-      @mutex.synchronize { @counters[counter] += amount }
+      @counters[counter] += amount
     end
 
     def get(counter)
-      @mutex.synchronize { @counters[counter] }
+      @counters[counter]
     end
 
+    # Cold path: mutex for consistent snapshot
     def to_h
       @mutex.synchronize do
         @counters.merge(uptime_seconds: (Time.now - @started_at).to_i).dup
@@ -39,7 +45,7 @@ module OpenTrace
 
     def reset!
       @mutex.synchronize do
-        @counters.transform_values! { 0 }
+        @counters = Hash.new(0)
         @started_at = Time.now
       end
     end

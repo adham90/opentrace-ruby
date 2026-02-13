@@ -28,8 +28,8 @@ RSpec.describe OpenTrace::Config do
       expect(config.enabled).to be true
     end
 
-    it "has empty ignore_paths" do
-      expect(config.ignore_paths).to eq([])
+    it "has default health check ignore_paths" do
+      expect(config.ignore_paths).to eq(%w[/up /health /healthz /ping /ready /livez /readyz])
     end
   end
 

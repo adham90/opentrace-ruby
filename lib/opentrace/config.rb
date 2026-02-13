@@ -4,9 +4,10 @@ module OpenTrace
   class Config
     REQUIRED_FIELDS = %i[endpoint api_key service].freeze
     LEVELS = { debug: 0, info: 1, warn: 2, error: 3, fatal: 4 }.freeze
+    LEVEL_INTS = { "DEBUG" => 0, "INFO" => 1, "WARN" => 2, "ERROR" => 3, "FATAL" => 4 }.freeze
 
     attr_accessor :endpoint, :api_key, :service, :environment, :timeout, :enabled,
-                  :context, :min_level, :allowed_levels, :hostname, :pid, :git_sha,
+                  :context, :hostname, :pid, :git_sha,
                   :batch_size, :flush_interval,
                   :max_retries, :retry_base_delay, :retry_max_delay,
                   :circuit_breaker_threshold, :circuit_breaker_timeout,
@@ -14,7 +15,6 @@ module OpenTrace
                   :on_drop,
                   :compression, :compression_threshold,
                   :sql_logging, :sql_duration_threshold_ms,
-                  :ignore_paths,
                   :pool_monitoring, :pool_monitoring_interval,
                   :queue_monitoring, :queue_monitoring_interval,
                   :request_summary, :timeline, :timeline_max_events,
@@ -22,7 +22,25 @@ module OpenTrace
                   :max_payload_bytes,
                   :trace_propagation,
                   :log_forwarding, :view_tracking, :cache_tracking,
-                  :deprecation_tracking, :detailed_request_log
+                  :deprecation_tracking, :detailed_request_log,
+                  :sample_rate, :sampler, :before_send
+
+    # Custom writers that invalidate the level cache
+    attr_reader :min_level, :allowed_levels, :ignore_paths
+
+    def min_level=(val)
+      @min_level = val
+      @level_cache = nil
+    end
+
+    def allowed_levels=(val)
+      @allowed_levels = val
+      @level_cache = nil
+    end
+
+    def ignore_paths=(val)
+      @ignore_paths = val
+    end
 
     def initialize
       @endpoint    = nil
@@ -50,7 +68,7 @@ module OpenTrace
       @compression_threshold = 1024 # only compress payloads > 1KB
       @sql_logging    = false
       @sql_duration_threshold_ms = 0.0
-      @ignore_paths   = []
+      @ignore_paths   = %w[/up /health /healthz /ping /ready /livez /readyz]
       @pool_monitoring = false
       @pool_monitoring_interval = 30
       @queue_monitoring = false
@@ -67,6 +85,10 @@ module OpenTrace
       @cache_tracking = false
       @deprecation_tracking = false
       @detailed_request_log = false
+      @sample_rate = 1.0     # Float 0.0-1.0, default 1.0 (all requests)
+      @sampler     = nil     # Proc(env) -> Float, for per-endpoint rates
+      @before_send = nil     # Proc(payload) -> payload|nil, filter/drop
+      @level_cache = nil
     end
 
     def valid?
@@ -81,12 +103,27 @@ module OpenTrace
       LEVELS[min_level.to_s.downcase.to_sym] || 0
     end
 
+    # Hot path: single hash lookup, zero allocations for known levels.
+    # Cache is built lazily on first call and invalidated when
+    # min_level or allowed_levels change.
     def level_allowed?(level)
-      if allowed_levels
-        allowed_levels.map { |l| l.to_s.upcase }.include?(level.to_s.upcase)
-      else
-        (LEVELS[level.to_s.downcase.to_sym] || 0) >= min_level_value
+      cache = @level_cache
+      unless cache
+        build_level_cache!
+        cache = @level_cache
       end
+      key = level.to_s.upcase
+      result = cache[key]
+      return result unless result.nil?
+      # Unknown level (e.g. "UNKNOWN"): treat as severity 0
+      return false if allowed_levels # not in the allowed list
+      0 >= (LEVELS[min_level.to_s.downcase.to_sym] || 0)
+    end
+
+    # Pre-compute the level cache. Called at end of configure block
+    # and lazily when settings change afterward.
+    def finalize!
+      build_level_cache!
     end
 
     # Maps OpenTrace min_level to Ruby Logger severity constant.
@@ -102,6 +139,21 @@ module OpenTrace
 
     def logger_severity
       LEVEL_TO_LOGGER_SEVERITY[min_level.to_s.downcase.to_sym] || 0
+    end
+
+    private
+
+    def build_level_cache!
+      min_int = LEVELS[min_level.to_s.downcase.to_sym] || 0
+      if allowed_levels
+        @level_cache = allowed_levels.each_with_object({}) do |l, h|
+          h[l.to_s.upcase] = true
+        end.freeze
+      else
+        @level_cache = LEVEL_INTS.each_with_object({}) do |(k, v), h|
+          h[k] = v >= min_int
+        end.freeze
+      end
     end
   end
 end

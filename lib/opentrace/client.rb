@@ -16,8 +16,9 @@ module OpenTrace
 
     attr_reader :stats
 
-    def initialize(config)
+    def initialize(config, sampler: nil)
       @config = config
+      @sampler = sampler
       @queue  = Thread::Queue.new
       @mutex  = Mutex.new
       @thread = nil
@@ -140,6 +141,16 @@ module OpenTrace
         next if batch.empty?
 
         send_batch(batch)
+
+        # Adjust backpressure based on queue depth
+        if @sampler
+          queue_pct = @queue.size.to_f / MAX_QUEUE_SIZE
+          if queue_pct > 0.75
+            @sampler.increase_backpressure!
+          elsif queue_pct < 0.25
+            @sampler.decrease_backpressure!
+          end
+        end
       end
     rescue Exception # rubocop:disable Lint/RescueException
       # Swallow all errors including thread kill
@@ -212,8 +223,19 @@ module OpenTrace
       # Disable HTTP tracking for our own calls to prevent infinite recursion
       Fiber[:opentrace_http_tracking_disabled] = true
 
-      # Apply per-payload truncation
-      batch = batch.map { |p| fit_payload(p) }.compact
+      # Materialize deferred entries + apply before_send filter + truncate
+      batch = batch.filter_map do |item|
+        payload = PayloadBuilder.materialize(item, @config)
+        next nil unless payload
+        if @config.before_send
+          payload = @config.before_send.call(payload) rescue payload
+          unless payload
+            @stats.increment(:dropped_filtered)
+            next nil
+          end
+        end
+        fit_payload(payload)
+      end
       return if batch.empty?
 
       json = JSON.generate(batch)
