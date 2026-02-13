@@ -255,7 +255,11 @@ module OpenTrace
         return
       end
 
-      response = send_with_retry(json)
+      response = if @config.transport == :unix_socket
+                   unix_socket_send(json)
+                 else
+                   send_with_retry(json)
+                 end
       handle_response(response, batch, json.bytesize)
     rescue StandardError
       @circuit_breaker.record_failure
@@ -380,6 +384,32 @@ module OpenTrace
       persistent_http.request(request)
     end
 
+    def unix_socket_send(json)
+      payload = if @config.compression && json.bytesize > @config.compression_threshold
+                  gzip_compress(json)
+                else
+                  json
+                end
+
+      socket = UNIXSocket.new(@config.socket_path)
+      # Protocol: 4-byte big-endian length prefix + payload
+      socket.write([payload.bytesize].pack("N"))
+      socket.write(payload)
+      socket.flush
+
+      # Read 4-byte status code response
+      response_data = socket.read(4)
+      status = response_data&.unpack1("N") || 500
+      socket.close
+
+      UnixSocketResponse.new(status)
+    rescue Errno::ECONNREFUSED, Errno::ENOENT, Errno::ENOTSOCK
+      # Socket not available — fall back to HTTP
+      send_with_retry(json)
+    rescue StandardError
+      nil
+    end
+
     def retryable_response?(response)
       response.code.to_i >= 500
     end
@@ -501,6 +531,20 @@ module OpenTrace
       request["User-Agent"] = "opentrace-ruby/#{OpenTrace::VERSION}"
       request["Authorization"] = "Bearer #{@config.api_key}"
       http.request(request)
+    end
+
+    # Adapts a numeric status code from Unix socket into Net::HTTP response duck type
+    UnixSocketResponse = Struct.new(:code) do
+      def is_a?(klass)
+        c = code.to_i
+        case klass.name
+        when "Net::HTTPSuccess"          then c >= 200 && c < 300
+        when "Net::HTTPTooManyRequests"  then c == 429
+        when "Net::HTTPUnauthorized"     then c == 401
+        when "Net::HTTPServerError"      then c >= 500 && c < 600
+        else super
+        end
+      end
     end
 
     def truncate_payload(payload)

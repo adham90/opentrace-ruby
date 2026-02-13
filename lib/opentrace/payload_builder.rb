@@ -77,6 +77,12 @@ module OpenTrace
         end
       end
 
+      # Run deferred EXPLAIN on background thread
+      if extra.is_a?(Hash) && extra[:pending_explains] && defined?(ActiveRecord::Base)
+        explain_results = run_pending_explains(extra.delete(:pending_explains))
+        meta[:explain_plans] = explain_results unless explain_results.empty?
+      end
+
       # Build request_summary from collector
       request_summary = nil
       if collector
@@ -143,6 +149,31 @@ module OpenTrace
       else
         backtrace.reject { |line| line.include?("/gems/") }
       end
+    end
+
+    def run_pending_explains(pending)
+      pending.filter_map do |entry|
+        plan = run_explain(entry[:sql])
+        next unless plan
+        {
+          sql: entry[:sql].to_s.slice(0, 500),
+          duration_ms: entry[:duration_ms],
+          name: entry[:name],
+          explain_plan: plan
+        }
+      end
+    rescue StandardError
+      []
+    end
+
+    def run_explain(sql)
+      ActiveRecord::Base.connection_pool.with_connection do |conn|
+        result = conn.execute("EXPLAIN #{sql}")
+        rows = result.respond_to?(:rows) ? result.rows : result.map(&:values)
+        rows.flatten.join("\n").slice(0, 2000)
+      end
+    rescue StandardError
+      nil
     end
 
     def build_request_summary(collector, summary, controller, action, method, path, status, duration_ms)

@@ -80,6 +80,16 @@ if defined?(::Rails::Railtie)
               collector.record_sql(name: sql_name, duration_ms: duration_ms, fingerprint: fp)
             end
 
+            # Flag slow queries for background EXPLAIN (opt-in)
+            if OpenTrace.config.explain_slow_queries &&
+               duration_ms > OpenTrace.config.explain_threshold_ms &&
+               explainable_query?(raw_sql)
+              pending = Fiber[:opentrace_pending_explains] ||= []
+              if pending.size < 3
+                pending << { sql: raw_sql, duration_ms: duration_ms, name: sql_name }
+              end
+            end
+
             # Forward individual SQL log (opt-in)
             if sql_logging
               forward_sql_log(payload, duration_ms)
@@ -167,6 +177,14 @@ if defined?(::Rails::Railtie)
           )
           @queue_monitor.start
         end
+
+        if OpenTrace.config.runtime_metrics
+          require_relative "runtime_monitor"
+          @runtime_monitor = OpenTrace::RuntimeMonitor.new(
+            interval: OpenTrace.config.runtime_metrics_interval
+          )
+          @runtime_monitor.start
+        end
       end
 
       class << self
@@ -213,6 +231,13 @@ if defined?(::Rails::Railtie)
           if session_id
             extra ||= {}
             extra[:session_id] = session_id
+          end
+
+          # Capture pending EXPLAIN queries (deferred to background thread)
+          pending_explains = Fiber[:opentrace_pending_explains]
+          if pending_explains && !pending_explains.empty?
+            extra ||= {}
+            extra[:pending_explains] = pending_explains
           end
 
           OpenTrace.client_enqueue_raw([
@@ -408,6 +433,10 @@ if defined?(::Rails::Railtie)
           Digest::MD5.hexdigest(normalized)[0, 8]
         rescue StandardError
           nil
+        end
+
+        def explainable_query?(sql)
+          sql && (sql.start_with?("SELECT") || sql.start_with?("select"))
         end
 
         def ignored_path?(path)

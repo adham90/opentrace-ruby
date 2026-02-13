@@ -28,7 +28,11 @@ module OpenTrace
                   :source_context, :before_breadcrumb,
                   :pii_scrubbing, :pii_patterns, :pii_disabled_patterns,
                   :session_tracking,
-                  :on_error, :after_send
+                  :on_error, :after_send,
+                :transport, :socket_path,
+                :local_vars_capture,
+                :explain_slow_queries, :explain_threshold_ms,
+                :runtime_metrics, :runtime_metrics_interval
 
     # Custom writers that invalidate the level cache
     attr_reader :min_level, :allowed_levels, :ignore_paths
@@ -103,6 +107,13 @@ module OpenTrace
       @session_tracking = false    # Extract session ID from cookies
       @on_error = nil              # Proc(exception, metadata) — called on error capture
       @after_send = nil            # Proc(batch_size, bytes) — called after successful delivery
+      @transport = :http              # :http | :unix_socket
+      @socket_path = "/tmp/opentrace.sock" # Unix socket path
+      @local_vars_capture = false     # Capture local variables via explicit binding
+      @explain_slow_queries = false   # Run EXPLAIN on slow SQL queries
+      @explain_threshold_ms = 100.0   # Threshold for EXPLAIN capture
+      @runtime_metrics = false        # Collect GC/runtime metrics
+      @runtime_metrics_interval = 30  # Interval in seconds
       @level_cache = nil
     end
 

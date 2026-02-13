@@ -17,6 +17,7 @@ require_relative "opentrace/sql_normalizer"
 require_relative "opentrace/breadcrumbs"
 require_relative "opentrace/source_context"
 require_relative "opentrace/pii_scrubber"
+require_relative "opentrace/local_vars"
 
 module OpenTrace
   LEVEL_VALUES = { "DEBUG" => 0, "INFO" => 1, "WARN" => 2, "ERROR" => 3, "FATAL" => 4 }.freeze
@@ -134,6 +135,11 @@ module OpenTrace
       buffer = Fiber[:opentrace_breadcrumbs]
       if buffer && !buffer.empty?
         meta[:breadcrumbs] = buffer.to_a
+      end
+
+      # Attach captured local variables (if capture_binding was called)
+      if config.local_vars_capture && exception.instance_variable_defined?(:@__opentrace_local_vars__)
+        meta[:local_variables] = exception.instance_variable_get(:@__opentrace_local_vars__)
       end
 
       # Fire on_error callback
@@ -279,6 +285,25 @@ module OpenTrace
     # Get the current request's breadcrumbs (for testing/debugging)
     def current_breadcrumbs
       Fiber[:opentrace_breadcrumbs]&.to_a || []
+    end
+
+    # Capture local variables from a rescue block's binding and attach
+    # them to the exception for the next OpenTrace.error() call.
+    #
+    #   rescue => e
+    #     OpenTrace.capture_binding(e, binding)
+    #     OpenTrace.error(e)
+    #     raise
+    #   end
+    def capture_binding(exception, binding_obj)
+      return unless enabled? && config.local_vars_capture
+
+      vars = LocalVars.capture(binding_obj)
+      if vars && !vars.empty?
+        exception.instance_variable_set(:@__opentrace_local_vars__, vars)
+      end
+    rescue StandardError
+      # Never raise
     end
 
     def stats
