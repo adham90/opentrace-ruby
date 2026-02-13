@@ -11,6 +11,7 @@ A thin, safe Ruby client that forwards structured application logs to an [OpenTr
 
 ## Features
 
+### Core
 - **Zero-risk integration** -- all errors swallowed, never raises to host app
 - **Async dispatch** -- logs are queued in-memory and sent via a background thread
 - **Batch sending** -- groups logs into configurable batches for efficient network usage
@@ -19,28 +20,59 @@ A thin, safe Ruby client that forwards structured application logs to an [OpenTr
 - **Works with any server** -- Puma (threads), Unicorn (forks), Passenger, and Falcon (fibers)
 - **Fork safe** -- detects forked worker processes and re-initializes cleanly
 - **Fiber safe** -- uses `Fiber[]` storage for correct request isolation in fiber-based servers
-- **Rails integration** -- auto-instruments controllers, SQL queries, ActiveJob, views, cache, and more
+- **Level filtering** -- `min_level` threshold or `allowed_levels` list to control which severities are forwarded
+- **Auto-enrichment** -- every log includes `hostname`, `pid`, and `git_sha` automatically
+- **Runtime controls** -- enable/disable logging at runtime without restarting
+- **Graceful shutdown** -- pending logs are flushed automatically on process exit
+- **Adaptive sampling** -- graduated backpressure reduces overhead under load (configurable `sample_rate`)
+- **Deferred payloads** -- request thread pushes frozen arrays; heavy work runs on background thread
+
+### Instrumentation
+- **Custom instrumentation** -- `OpenTrace.trace("stripe.charge") { ... }` with nested spans and timing
+- **Exception helper** -- `OpenTrace.error` captures class, message, cleaned backtrace, cause chain, and error fingerprint
+- **Exception cause chaining** -- walks `exception.cause` up to 5 levels deep
+- **Breadcrumbs** -- `OpenTrace.add_breadcrumb` records a trail of events attached to errors
+- **Source code context** -- captures surrounding source lines at the error origin (opt-in)
+- **Local variables capture** -- `OpenTrace.capture_binding(e, binding)` snapshots variables at crash point (opt-in)
+- **Transaction naming** -- `OpenTrace.set_transaction_name` for custom grouping
+- **Business events** -- `OpenTrace.event` sends typed events (e.g. `payment.completed`) that bypass level filtering
+- **Context support** -- attach global metadata to every log via Hash or Proc
+
+### Rails Integration
+- **Auto-instrumentation** -- controllers, SQL queries, ActiveJob, views, cache, deprecation warnings
 - **Rack middleware** -- propagates `request_id` via fiber-local storage
+- **Per-request summary** -- one rich log per request with SQL, view, cache breakdown and timeline
+- **N+1 query detection** -- warns when a request exceeds 20 SQL queries
+- **Duplicate query detection** -- fingerprints SQL queries to find repeated patterns
+- **SQL normalization** -- replaces literals with `?` for grouping; generates stable fingerprints
+- **EXPLAIN plan capture** -- runs EXPLAIN on slow queries asynchronously on background thread (opt-in)
+- **Log trace injection** -- injects `[trace_id=xxx request_id=yyy]` into Rails logger output (opt-in)
+- **Session tracking** -- extracts session ID from rack session or cookies (opt-in)
 - **Logger wrapper** -- drop-in replacement that forwards to OpenTrace while keeping your original logger
 - **Rails 7.1+ BroadcastLogger** -- native support via `broadcast_to`
 - **TaggedLogging** -- preserves `ActiveSupport::TaggedLogging` tags in metadata
-- **Context support** -- attach global metadata to every log via Hash or Proc
-- **Business events** -- `OpenTrace.event` sends typed events (e.g. `payment.completed`) that bypass level filtering
-- **Level filtering** -- `min_level` threshold or `allowed_levels` list to control which severities are forwarded
-- **Auto-enrichment** -- every log includes `hostname`, `pid`, and `git_sha` automatically
-- **Exception helper** -- `OpenTrace.error` captures class, message, cleaned backtrace, and error fingerprint
-- **Runtime controls** -- enable/disable logging at runtime without restarting
-- **Graceful shutdown** -- pending logs are flushed automatically on process exit
-- **N+1 query detection** -- warns when a request exceeds 20 SQL queries
-- **Per-request summary** -- one rich log per request with SQL, view, cache breakdown and timeline
 - **Error fingerprinting** -- stable fingerprint for grouping identical errors across requests
 - **Deprecation tracking** -- captures Rails deprecation warnings with callsite
+
+### Data Protection
+- **PII scrubbing** -- automatic detection and redaction of emails, credit cards, SSNs, tokens, passwords (opt-in)
+- **Lifecycle callbacks** -- `on_error`, `after_send`, `before_breadcrumb`, `before_send` hooks
+- **Before-send filter** -- drop or modify payloads before delivery
+
+### Monitoring
 - **DB pool monitoring** -- background thread reports connection pool saturation (opt-in)
 - **Job queue depth** -- monitors Sidekiq, GoodJob, or SolidQueue queue sizes (opt-in)
 - **Memory delta tracking** -- snapshots process RSS before/after each request (opt-in)
 - **External HTTP tracking** -- captures outbound Net::HTTP calls with timing (opt-in)
-- **Version negotiation** -- startup compatibility check with capability-based feature detection
+- **GC/Runtime metrics** -- periodic collection of GC stats, thread count, and process RSS (opt-in)
+
+### Delivery
 - **Distributed tracing** -- W3C Trace Context (`traceparent`) propagation across services with span IDs
+- **Unix socket transport** -- 2-5x faster delivery for co-located servers with automatic HTTP fallback (opt-in)
+- **Gzip compression** -- automatic payload compression for bandwidth reduction
+- **Version negotiation** -- startup compatibility check with capability-based feature detection
+- **Circuit breaker** -- stops sending when server is unreachable, resumes after cooldown
+- **Exponential backoff** -- retries with jitter on server errors
 
 ## Installation
 
@@ -89,7 +121,7 @@ OpenTrace.configure do |c|
   c.environment = "production"           # default: nil
   c.timeout     = 1.0                    # HTTP timeout in seconds (default: 1.0)
   c.enabled     = true                   # default: true
-  c.min_level   = :info                  # minimum level to forward (default: :debug)
+  c.min_level   = :info                  # minimum level to forward (default: :info)
   c.allowed_levels = [:warn, :error]     # explicit level list (overrides min_level, default: nil)
   c.batch_size  = 50                     # logs per batch (default: 50)
   c.flush_interval = 5.0                 # seconds between flushes (default: 5.0)
@@ -105,15 +137,15 @@ OpenTrace.configure do |c|
   c.git_sha  = ENV["REVISION"]           # checks REVISION, GIT_SHA, HEROKU_SLUG_COMMIT
 
   # SQL logging (Rails only)
-  c.sql_logging = true                   # default: true
+  c.sql_logging = false                  # forward individual SQL queries (default: false)
   c.sql_duration_threshold_ms = 100.0    # only log queries slower than this (default: 0.0 = all)
 
-  # Path filtering
-  c.ignore_paths = ["/health", %r{\A/assets/}]  # skip noisy paths (default: [])
+  # Path filtering (defaults include /up, /health, /healthz, /ping, /ready, /livez, /readyz)
+  c.ignore_paths = ["/health", %r{\A/assets/}]  # customize paths to skip
 
   # Per-request summary (Rails only)
   c.request_summary = true               # accumulate events into one rich log (default: true)
-  c.timeline = true                      # include event timeline in summary (default: true)
+  c.timeline = false                     # include event timeline in summary (default: false)
   c.timeline_max_events = 200            # cap timeline entries (default: 200)
 
   # Background monitors (opt-in)
@@ -125,6 +157,42 @@ OpenTrace.configure do |c|
   # Advanced opt-in features
   c.memory_tracking = false              # RSS delta per request (default: false)
   c.http_tracking = false                # external HTTP call tracking (default: false)
+
+  # Sampling & performance
+  c.sample_rate = 1.0                    # 0.0-1.0, fraction of requests to trace (default: 1.0)
+  c.sampler = ->(env) { 0.1 }           # dynamic per-endpoint sampler (default: nil)
+  c.before_send = ->(payload) { payload } # filter/drop payloads before delivery (default: nil)
+
+  # SQL normalization (default: true)
+  c.sql_normalization = true             # replace SQL literals with ? for grouping
+
+  # Instrumentation
+  c.source_context = false               # capture source code around errors (default: false)
+  c.local_vars_capture = false           # enable OpenTrace.capture_binding (default: false)
+  c.log_trace_injection = false          # inject trace_id into Rails logger (default: false)
+  c.session_tracking = false             # extract session ID from cookies (default: false)
+
+  # EXPLAIN plan capture
+  c.explain_slow_queries = false         # run EXPLAIN on slow queries (default: false)
+  c.explain_threshold_ms = 100.0         # threshold in ms (default: 100.0)
+
+  # PII protection
+  c.pii_scrubbing = false                # scrub PII from metadata (default: false)
+  c.pii_patterns = [/CUST-\d{8}/]       # additional patterns (default: nil)
+  c.pii_disabled_patterns = [:phone]     # disable built-in patterns (default: nil)
+
+  # Lifecycle callbacks
+  c.on_error = ->(exc, meta) { }         # called on error capture (default: nil)
+  c.after_send = ->(batch_size, bytes) { } # called after delivery (default: nil)
+  c.before_breadcrumb = ->(crumb) { crumb } # filter breadcrumbs (default: nil)
+
+  # GC/Runtime metrics
+  c.runtime_metrics = false              # collect GC/thread/memory stats (default: false)
+  c.runtime_metrics_interval = 30        # seconds between collections (default: 30)
+
+  # Unix socket transport
+  c.transport = :http                    # :http or :unix_socket (default: :http)
+  c.socket_path = "/tmp/opentrace.sock"  # path to Unix socket (default: "/tmp/opentrace.sock")
 end
 ```
 
@@ -185,6 +253,96 @@ This captures:
 - `exception_message` -- truncated to 500 characters
 - `backtrace` -- cleaned (Rails backtrace cleaner or gem-filtered), limited to 15 frames
 - `error_fingerprint` -- 12-char hash for grouping identical errors (stable across line number changes)
+- `exception_causes` -- full cause chain (up to 5 levels via `exception.cause`)
+- `breadcrumbs` -- trail of events leading up to the error (if any were added)
+- `source_context` -- surrounding source code lines at the error origin (when enabled)
+- `local_variables` -- variable state at crash point (when `capture_binding` was called)
+
+### Custom Instrumentation
+
+Trace any block of code with automatic timing:
+
+```ruby
+OpenTrace.trace("stripe.charge", resource: "Invoice") do |span|
+  span.set_tag(:amount, 2000)
+  Stripe::Charge.create(amount: 2000, currency: "usd")
+end
+```
+
+Spans can be nested -- child spans automatically track their parent:
+
+```ruby
+OpenTrace.trace("checkout.process") do
+  OpenTrace.trace("checkout.validate") { validate_cart }
+  OpenTrace.trace("checkout.charge") { charge_card }
+  OpenTrace.trace("checkout.fulfill") { create_order }
+end
+```
+
+Each span emits a log entry with `span_operation`, `span_duration_ms`, and parent/child IDs. When a `RequestCollector` is active, spans also appear in the request summary.
+
+### Breadcrumbs
+
+Record a trail of events leading up to an error:
+
+```ruby
+OpenTrace.add_breadcrumb("auth", "User logged in", { provider: "google" })
+OpenTrace.add_breadcrumb("nav", "Visited /settings")
+OpenTrace.add_breadcrumb("action", "Changed password")
+```
+
+Breadcrumbs are stored per-request (Fiber-local, max 25) and automatically attached to error payloads. They are cleared after each request.
+
+Filter breadcrumbs with a callback:
+
+```ruby
+OpenTrace.configure do |c|
+  c.before_breadcrumb = ->(crumb) {
+    crumb.category == "noisy" ? nil : crumb  # return nil to drop
+  }
+end
+```
+
+### Local Variables Capture
+
+Capture the state of local variables when an error occurs:
+
+```ruby
+OpenTrace.configure do |c|
+  c.local_vars_capture = true
+end
+
+def update_profile(user, params)
+  user.update!(params)
+rescue ActiveRecord::RecordInvalid => e
+  OpenTrace.capture_binding(e, binding)  # explicit capture
+  OpenTrace.error(e, { action: "update_profile" })
+  raise
+end
+```
+
+This produces:
+
+```json
+{
+  "local_variables": [
+    { "name": "user", "value": "#<User id: 42, name: nil>", "type": "User" },
+    { "name": "params", "value": "{\"name\"=>\"\"}", "type": "Hash" }
+  ]
+}
+```
+
+Capped at 10 variables, 500 chars per value. No global VM hooks -- zero overhead unless you explicitly call `capture_binding`.
+
+### Transaction Naming
+
+Override the auto-detected transaction name for custom grouping:
+
+```ruby
+OpenTrace.set_transaction_name("API::V2::Users#search")
+```
+
+The transaction name appears in the request log message and metadata, enabling grouping by business operation instead of route.
 
 ### Business Events
 
@@ -383,7 +541,7 @@ Configure SQL logging:
 ```ruby
 OpenTrace.configure do |c|
   # ...
-  c.sql_logging = true                  # enable/disable (default: true)
+  c.sql_logging = true                  # enable/disable (default: false)
   c.sql_duration_threshold_ms = 100.0   # only log slow queries (default: 0.0 = all)
 end
 ```
@@ -542,6 +700,185 @@ Failed calls include an error type:
 A recursion guard prevents OpenTrace's own HTTP calls to the server from being tracked. The `time_breakdown` in the request summary includes `http_pct` alongside `sql_pct` and `view_pct`.
 
 **Note**: This works by prepending a module to `Net::HTTP`. Libraries that use `Net::HTTP` internally (Faraday, HTTParty, RestClient) are automatically captured.
+
+### Source Code Context
+
+When enabled, error logs include the surrounding source lines at the crash location:
+
+```ruby
+OpenTrace.configure do |c|
+  c.source_context = true
+end
+```
+
+Produces:
+
+```json
+{
+  "source_context": {
+    "file": "app/models/order.rb",
+    "line": 42,
+    "context": {
+      "39": "  def total",
+      "40": "    items.sum(:price) +",
+      "41": "      tax_amount +",
+      "42": "      shipping_cost",
+      "43": "  end"
+    }
+  }
+}
+```
+
+Files are cached (LRU, 50 files max). Only reads files under `/app/`, `/lib/`, or `/config/` and smaller than 100KB.
+
+### SQL Normalization
+
+Enabled by default. Replaces SQL literals with `?` placeholders for grouping:
+
+```
+SELECT * FROM users WHERE id = 42 AND email = 'alice@example.com'
+  => SELECT * FROM users WHERE id = ? AND email = ?
+```
+
+Each normalized query gets a 12-char fingerprint (MD5) for fast grouping. The request summary includes `top_duplicates` with the most repeated query patterns.
+
+### Duplicate Query Detection
+
+When a `RequestCollector` is active, SQL queries are fingerprinted and counted. The request summary includes:
+
+- `duplicate_queries` -- number of fingerprints seen more than once
+- `worst_duplicate_count` -- highest repeat count
+- `top_duplicates` -- top 3 repeated queries with count and fingerprint
+- `n_plus_one_warning` -- `true` when worst duplicate exceeds 5
+
+### Log Trace Injection
+
+Injects trace context into your existing Rails logger output:
+
+```ruby
+OpenTrace.configure do |c|
+  c.log_trace_injection = true
+end
+```
+
+Before: `Processing by UsersController#show`
+After: `[trace_id=abc123 request_id=req-456] Processing by UsersController#show`
+
+### Session Tracking
+
+Extracts session ID from the Rack session or session cookie:
+
+```ruby
+OpenTrace.configure do |c|
+  c.session_tracking = true
+end
+```
+
+The session ID appears in request metadata, enabling session-level analysis.
+
+### PII Scrubbing
+
+Automatically detects and redacts sensitive data before sending:
+
+```ruby
+OpenTrace.configure do |c|
+  c.pii_scrubbing = true
+end
+```
+
+Built-in patterns detect: credit card numbers, email addresses, SSNs, phone numbers, bearer tokens, and API keys. Sensitive keys (`password`, `secret`, `token`, `api_key`, `authorization`) are always redacted.
+
+Customize patterns:
+
+```ruby
+OpenTrace.configure do |c|
+  c.pii_scrubbing = true
+  c.pii_patterns = [/CUST-\d{8}/]        # add custom patterns
+  c.pii_disabled_patterns = [:phone]       # disable built-in patterns
+end
+```
+
+PII scrubbing runs on the background thread -- zero request-thread overhead.
+
+### EXPLAIN Plan Capture
+
+Automatically captures EXPLAIN output for slow SQL queries:
+
+```ruby
+OpenTrace.configure do |c|
+  c.explain_slow_queries = true
+  c.explain_threshold_ms = 50.0  # queries slower than 50ms
+end
+```
+
+The SQL text is captured on the request thread (zero DB overhead). EXPLAIN is executed asynchronously on the background thread using a separate DB connection. Max 3 EXPLAIN queries per request.
+
+```json
+{
+  "explain_plans": [{
+    "sql": "SELECT * FROM orders WHERE user_id = 42 ORDER BY created_at DESC",
+    "duration_ms": 87.3,
+    "explain_plan": "Seq Scan on orders  (cost=0.00..45892.00 rows=12 width=380)\n  Filter: (user_id = 42)"
+  }]
+}
+```
+
+### GC/Runtime Metrics
+
+Background thread collects Ruby runtime stats at a configurable interval:
+
+```ruby
+OpenTrace.configure do |c|
+  c.runtime_metrics = true
+  c.runtime_metrics_interval = 30  # seconds (default: 30)
+end
+```
+
+Metrics collected: `gc_count`, `gc_major_count`, `gc_minor_count`, `gc_heap_live_slots`, `gc_heap_free_slots`, `gc_malloc_increase_bytes`, `thread_count`, `process_rss_mb`, `process_pid`. Sent as `event_type: "runtime.metrics"`.
+
+### Unix Socket Transport
+
+For deployments where the OpenTrace server runs on the same host:
+
+```ruby
+OpenTrace.configure do |c|
+  c.transport = :unix_socket
+  c.socket_path = "/var/run/opentrace.sock"
+end
+```
+
+2-5x faster than HTTP for local delivery (no TCP/TLS overhead). Falls back to HTTP automatically if the socket is unavailable. Same batching, compression, and retry guarantees.
+
+### Lifecycle Callbacks
+
+Hook into key lifecycle events:
+
+```ruby
+OpenTrace.configure do |c|
+  # Called when OpenTrace.error captures an exception
+  c.on_error = ->(exception, metadata) {
+    Sentry.capture_exception(exception) if metadata[:exception_class] == "CriticalError"
+  }
+
+  # Called after each successful batch delivery
+  c.after_send = ->(batch_size, bytes) {
+    StatsD.histogram("opentrace.batch_size", batch_size)
+  }
+
+  # Filter or modify breadcrumbs
+  c.before_breadcrumb = ->(crumb) {
+    crumb.category == "secret" ? nil : crumb  # return nil to drop
+  }
+
+  # Filter or modify entire payloads before delivery
+  c.before_send = ->(payload) {
+    payload[:metadata].delete(:internal_debug) if Rails.env.production?
+    payload  # return nil to drop the entire payload
+  }
+end
+```
+
+All callbacks are wrapped in rescue -- a broken callback will never affect the host app.
 
 ## Runtime Controls
 
