@@ -25,13 +25,17 @@ module OpenTrace
   # Null object for when OpenTrace is not configured.
   # All methods are no-ops, avoiding nil checks on the hot path.
   class NilClient
+    def initialize
+      @nil_stats = NilStats.new
+    end
+
     def enqueue(_) = nil
     def shutdown(timeout: 5) = nil
     def queue_size = 0
     def circuit_state = :closed
     def auth_suspended? = false
     def stats_snapshot = { queue_size: 0, circuit_state: :closed, auth_suspended: false }
-    def stats = NilStats.new
+    def stats = @nil_stats
     def supports?(_) = false
   end
 

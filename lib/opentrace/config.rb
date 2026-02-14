@@ -23,7 +23,7 @@ module OpenTrace
                   :trace_propagation,
                   :log_forwarding, :view_tracking, :cache_tracking,
                   :deprecation_tracking, :detailed_request_log,
-                  :sample_rate, :sampler, :before_send,
+                  :sampler, :before_send,
                   :sql_normalization, :log_trace_injection,
                   :source_context, :before_breadcrumb,
                   :pii_scrubbing, :pii_patterns, :pii_disabled_patterns,
@@ -35,7 +35,7 @@ module OpenTrace
                 :runtime_metrics, :runtime_metrics_interval
 
     # Custom writers that invalidate caches
-    attr_reader :enabled, :min_level, :allowed_levels, :ignore_paths
+    attr_reader :enabled, :min_level, :allowed_levels, :ignore_paths, :sample_rate
 
     def enabled=(val)
       @enabled = val
@@ -54,6 +54,14 @@ module OpenTrace
 
     def ignore_paths=(val)
       @ignore_paths = val
+    end
+
+    def sample_rate=(val)
+      val = val.to_f
+      unless (0.0..1.0).cover?(val)
+        raise ArgumentError, "sample_rate must be between 0.0 and 1.0, got #{val}"
+      end
+      @sample_rate = val
     end
 
     def initialize
