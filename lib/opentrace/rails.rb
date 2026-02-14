@@ -43,8 +43,12 @@ if defined?(::Rails::Railtie)
           # Swallow - never affect the host app
         end
 
-        # SQL subscriber — lightweight counter + optional forwarding with filtering
+        # SQL subscriber — lightweight counter + optional forwarding with filtering.
+        # Cache config values at subscribe time to avoid repeated config lookups
+        # on every single SQL query (can be 50-200+ per request).
         sql_logging = OpenTrace.config.sql_logging
+        explain_enabled = OpenTrace.config.explain_slow_queries
+        explain_threshold = OpenTrace.config.explain_threshold_ms
         ActiveSupport::Notifications.subscribe("sql.active_record") do |name, started, finished, id, payload|
           sql_count = Fiber[:opentrace_sql_count]
           collector = Fiber[:opentrace_collector]
@@ -81,8 +85,8 @@ if defined?(::Rails::Railtie)
             end
 
             # Flag slow queries for background EXPLAIN (opt-in)
-            if OpenTrace.config.explain_slow_queries &&
-               duration_ms > OpenTrace.config.explain_threshold_ms &&
+            if explain_enabled &&
+               duration_ms > explain_threshold &&
                explainable_query?(raw_sql)
               pending = Fiber[:opentrace_pending_explains] ||= []
               if pending.size < 3
@@ -328,6 +332,12 @@ if defined?(::Rails::Railtie)
           return unless OpenTrace.enabled?
 
           duration = duration_ms&.round(2)
+
+          # Determine level BEFORE doing any expensive work (regex, hashing).
+          # Most SQL logs are DEBUG — skip everything if DEBUG is filtered.
+          level = (duration && duration > 1000) ? "WARN" : "DEBUG"
+          return unless OpenTrace.config.level_allowed?(level)
+
           threshold = OpenTrace.config.sql_duration_threshold_ms
 
           # Skip if below threshold
@@ -354,7 +364,6 @@ if defined?(::Rails::Railtie)
             metadata[:sql_table] = $1
           end
 
-          level = (duration && duration > 1000) ? "WARN" : "DEBUG"
           message = "SQL #{payload[:name]} #{duration}ms"
 
           OpenTrace.log(level, message, metadata)

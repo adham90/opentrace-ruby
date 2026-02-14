@@ -175,30 +175,42 @@ module OpenTrace
       deadline = Time.now + @config.flush_interval
 
       loop do
-        if batch.empty?
-          # Block until first item arrives or timeout
-          item = pop_with_timeout(deadline - Time.now)
-          return nil if item.nil? && @queue.closed?
-          batch << item if item
-        else
-          # Non-blocking drain up to batch_size
-          while batch.size < @config.batch_size
-            begin
-              item = @queue.pop(true) # non_block = true
-              batch << item
-            rescue ThreadError
-              break # queue empty
-            end
+        # Non-blocking drain: grab everything currently in the queue
+        while batch.size < @config.batch_size
+          begin
+            item = @queue.pop(true) # non_block = true
+            batch << item
+          rescue ThreadError, ClosedQueueError
+            break # queue empty or closed
           end
         end
 
         break if batch.size >= @config.batch_size
         break if Time.now >= deadline
-        break if @queue.closed?
+
+        # Queue closed — return remaining items or nil to signal shutdown
+        if @queue.closed?
+          return batch.empty? ? nil : batch
+        end
+
+        # Queue is empty but we haven't hit batch_size or deadline.
+        # Block (up to MAX_POP_WAIT) instead of busy-spinning so we
+        # release the GIL and let request-serving fibers run.
+        item = pop_with_timeout(deadline - Time.now)
+        return nil if item.nil? && @queue.closed?
+        batch << item if item
       end
 
       batch
     end
+
+    # Maximum time to block in a single Queue#pop call.
+    # Falcon (and other fiber-based servers) rely on the GIL being released
+    # periodically so their health-check fibers can run.  A long blocking
+    # pop (e.g. 5 seconds) starves those fibers and causes Falcon to
+    # SIGKILL the worker.  By capping at 0.5s we yield the GIL frequently
+    # enough to keep the health-check happy (30s default timeout).
+    MAX_POP_WAIT = 0.5
 
     def pop_with_timeout(timeout)
       if timeout <= 0
@@ -206,7 +218,7 @@ module OpenTrace
         # items arrived while we were busy (e.g. during version check).
         @queue.pop(true)
       else
-        @queue.pop(timeout: timeout)
+        @queue.pop(timeout: [timeout, MAX_POP_WAIT].min)
       end
     rescue ThreadError, ClosedQueueError
       nil

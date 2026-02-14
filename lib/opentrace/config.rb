@@ -6,7 +6,7 @@ module OpenTrace
     LEVELS = { debug: 0, info: 1, warn: 2, error: 3, fatal: 4 }.freeze
     LEVEL_INTS = { "DEBUG" => 0, "INFO" => 1, "WARN" => 2, "ERROR" => 3, "FATAL" => 4 }.freeze
 
-    attr_accessor :endpoint, :api_key, :service, :environment, :timeout, :enabled,
+    attr_accessor :endpoint, :api_key, :service, :environment, :timeout,
                   :context, :hostname, :pid, :git_sha,
                   :batch_size, :flush_interval,
                   :max_retries, :retry_base_delay, :retry_max_delay,
@@ -34,8 +34,13 @@ module OpenTrace
                 :explain_slow_queries, :explain_threshold_ms,
                 :runtime_metrics, :runtime_metrics_interval
 
-    # Custom writers that invalidate the level cache
-    attr_reader :min_level, :allowed_levels, :ignore_paths
+    # Custom writers that invalidate caches
+    attr_reader :enabled, :min_level, :allowed_levels, :ignore_paths
+
+    def enabled=(val)
+      @enabled = val
+      @enabled_cache = nil
+    end
 
     def min_level=(val)
       @min_level = val
@@ -115,6 +120,7 @@ module OpenTrace
       @runtime_metrics = false        # Collect GC/runtime metrics
       @runtime_metrics_interval = 30  # Interval in seconds
       @level_cache = nil
+      @enabled_cache = nil
     end
 
     def valid?
@@ -122,7 +128,12 @@ module OpenTrace
     end
 
     def enabled?
-      @enabled && valid?
+      # Cache the enabled+valid result to avoid recomputing valid? on every call.
+      # Invalidated by finalize! (called at end of configure block) and enabled= setter.
+      if @enabled_cache.nil?
+        @enabled_cache = @enabled && valid?
+      end
+      @enabled_cache
     end
 
     def min_level_value
@@ -138,7 +149,10 @@ module OpenTrace
         build_level_cache!
         cache = @level_cache
       end
-      key = level.to_s.upcase
+      # Avoid allocating a new String when the level is already uppercase.
+      # On the hot path (called per SQL query, per log line), this saves
+      # one String allocation per call.
+      key = level.is_a?(String) && level == level.upcase ? level : level.to_s.upcase
       result = cache[key]
       return result unless result.nil?
       # Unknown level (e.g. "UNKNOWN"): treat as severity 0
@@ -149,6 +163,7 @@ module OpenTrace
     # Pre-compute the level cache. Called at end of configure block
     # and lazily when settings change afterward.
     def finalize!
+      @enabled_cache = nil
       build_level_cache!
     end
 
