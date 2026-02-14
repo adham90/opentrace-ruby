@@ -13,7 +13,9 @@ module OpenTrace
       elsif entry.is_a?(Hash)
         entry # legacy direct payload
       end
-    rescue StandardError
+    rescue StandardError => e
+      OpenTrace.stats.increment(:payload_build_errors) if OpenTrace.respond_to?(:stats)
+      $stderr.puts "[OpenTrace] PayloadBuilder error: #{e.class}: #{e.message}" if OpenTrace.respond_to?(:config) && OpenTrace.config.respond_to?(:debug) && OpenTrace.config.debug
       nil
     end
 

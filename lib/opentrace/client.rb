@@ -427,9 +427,14 @@ module OpenTrace
       socket.write(payload)
       socket.flush
 
-      # Read 4-byte status code response
-      response_data = socket.read(4)
-      status = response_data&.unpack1("N") || 500
+      # Read 4-byte status code response with timeout
+      if IO.select([socket], nil, nil, 5)
+        response_data = socket.read(4)
+        status = response_data&.unpack1("N") || 500
+      else
+        @stats.increment(:socket_timeouts)
+        status = 500
+      end
       socket.close
 
       UnixSocketResponse.new(status)

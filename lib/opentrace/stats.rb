@@ -26,10 +26,8 @@ module OpenTrace
       @started_at = Time.now
     end
 
-    # Hot path: no mutex. Under CRuby's GIL, Hash#[]= with integer
-    # increment is effectively atomic for single operations.
     def increment(counter, amount = 1)
-      @counters[counter] += amount
+      @mutex.synchronize { @counters[counter] += amount }
     end
 
     def get(counter)
