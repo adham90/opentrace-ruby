@@ -5,6 +5,22 @@ require_relative "trace_context"
 
 module OpenTrace
   class Middleware
+    # All Fiber-local keys managed by this middleware.
+    # Centralised so cleanup never misses one.
+    FIBER_KEYS = %i[
+      opentrace_collector
+      opentrace_cached_context
+      opentrace_sql_count
+      opentrace_sql_total_ms
+      opentrace_trace_id
+      opentrace_span_id
+      opentrace_parent_span_id
+      opentrace_transaction_name
+      opentrace_breadcrumbs
+      opentrace_session_id
+      opentrace_pending_explains
+    ].freeze
+
     def initialize(app)
       @app = app
     end
@@ -65,21 +81,15 @@ module OpenTrace
         collector.memory_after = current_rss_mb
       end
 
-      Fiber[:opentrace_collector] = nil
-      Fiber[:opentrace_cached_context] = nil
-      Fiber[:opentrace_sql_count] = nil
-      Fiber[:opentrace_sql_total_ms] = nil
-      Fiber[:opentrace_trace_id] = nil
-      Fiber[:opentrace_span_id] = nil
-      Fiber[:opentrace_parent_span_id] = nil
-      Fiber[:opentrace_transaction_name] = nil
-      Fiber[:opentrace_breadcrumbs] = nil
-      Fiber[:opentrace_session_id] = nil
-      Fiber[:opentrace_pending_explains] = nil
+      cleanup_fiber_locals
       OpenTrace.current_request_id = nil
     end
 
     private
+
+    def cleanup_fiber_locals
+      FIBER_KEYS.each { |key| Fiber[key] = nil }
+    end
 
     # Extract trace context from incoming request headers.
     # Priority: W3C traceparent > X-Trace-ID > request_id > generate new
