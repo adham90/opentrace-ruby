@@ -178,6 +178,69 @@ RSpec.describe "End-to-end integration" do
     end
   end
 
+  describe "context proc in payload" do
+    it "includes context data in metadata when context proc is configured" do
+      OpenTrace.configure do |c|
+        c.endpoint    = "https://opentrace.test"
+        c.api_key     = "ctx-key"
+        c.service     = "ctx-svc"
+        c.environment = "test"
+        c.context     = -> { { user_id: 42, tenant: "acme" } }
+      end
+
+      OpenTrace.log("INFO", "with context", { extra_key: "val" })
+
+      OpenTrace.shutdown(timeout: 5)
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            body = parse_log_body(req)
+            body["metadata"]["user_id"] == 42 &&
+              body["metadata"]["tenant"] == "acme" &&
+              body["metadata"]["extra_key"] == "val"
+          }
+      ).to have_been_made.once
+    end
+
+    it "includes context data in request log payload" do
+      OpenTrace.configure do |c|
+        c.endpoint    = "https://opentrace.test"
+        c.api_key     = "ctx-key"
+        c.service     = "ctx-svc"
+        c.environment = "test"
+        c.context     = -> { { user_id: 99 } }
+        c.flush_interval = 0.2
+        c.compression = false
+      end
+
+      # Simulate what forward_request_log does after the fix:
+      # resolve context if not cached
+      ctx = OpenTrace.send(:resolve_context_raw)
+      ctx = ctx.is_a?(Hash) ? ctx : {}
+
+      OpenTrace.client_enqueue_raw([
+        :request,
+        Time.now - 0.05, Time.now,
+        "OrdersController", "create", "POST", "/orders", 201,
+        nil, nil, nil,
+        "req-ctx-1", nil, nil, nil,
+        ctx, nil, nil
+      ].freeze)
+
+      OpenTrace.shutdown(timeout: 5)
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            body = parse_log_body(req)
+            body["metadata"]["user_id"] == 99 &&
+              body["metadata"]["request_id"] == "req-ctx-1"
+          }
+      ).to have_been_made.once
+    end
+  end
+
   describe "reconfiguration" do
     it "switches to new endpoint after reconfigure" do
       configure_opentrace!

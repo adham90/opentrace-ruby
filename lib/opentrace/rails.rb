@@ -244,6 +244,15 @@ if defined?(::Rails::Railtie)
             extra[:pending_explains] = pending_explains
           end
 
+          # Resolve context if not yet cached.
+          # With sql_logging/log_forwarding off (default), no OpenTrace.log()
+          # runs during the request, so the context proc is never evaluated.
+          cached_ctx = Fiber[:opentrace_cached_context]
+          unless cached_ctx
+            cached_ctx = OpenTrace.send(:resolve_context_raw)
+            cached_ctx = cached_ctx.is_a?(Hash) ? cached_ctx : {}
+          end
+
           OpenTrace.client_enqueue_raw([
             :request,
             started,
@@ -260,7 +269,7 @@ if defined?(::Rails::Railtie)
             Fiber[:opentrace_trace_id],
             Fiber[:opentrace_span_id],
             Fiber[:opentrace_parent_span_id],
-            Fiber[:opentrace_cached_context],
+            cached_ctx,
             Fiber[:opentrace_collector],
             extra
           ].freeze)

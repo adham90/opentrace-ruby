@@ -258,5 +258,56 @@ RSpec.describe OpenTrace::PayloadBuilder do
       expect(payload[:metadata][:sql_query_count]).to eq(5)
       expect(payload[:metadata][:sql_total_ms]).to eq(12.3)
     end
+
+    it "includes context data (user_id) in metadata from cached_ctx" do
+      cached_ctx = { user_id: 42, tenant: "acme" }
+
+      entry = [
+        :request, started, finished,
+        "UsersController", "show", "GET", "/users/1", 200,
+        nil, nil, nil,
+        "req-1", nil, nil, nil,
+        cached_ctx, nil, nil
+      ].freeze
+
+      payload = described_class.materialize(entry, OpenTrace.config)
+
+      expect(payload[:metadata][:user_id]).to eq(42)
+      expect(payload[:metadata][:tenant]).to eq("acme")
+      expect(payload[:metadata][:request_id]).to eq("req-1")
+    end
+
+    it "merges extra over cached_ctx without losing context" do
+      cached_ctx = { user_id: 42 }
+      extra = { sql_query_count: 3 }
+
+      entry = [
+        :request, started, finished,
+        "UsersController", "show", "GET", "/users/1", 200,
+        nil, nil, nil,
+        nil, nil, nil, nil,
+        cached_ctx, nil, extra
+      ].freeze
+
+      payload = described_class.materialize(entry, OpenTrace.config)
+
+      expect(payload[:metadata][:user_id]).to eq(42)
+      expect(payload[:metadata][:sql_query_count]).to eq(3)
+    end
+
+    it "handles nil cached_ctx gracefully" do
+      entry = [
+        :request, started, finished,
+        "UsersController", "show", "GET", "/users/1", 200,
+        nil, nil, nil,
+        "req-1", nil, nil, nil,
+        nil, nil, nil
+      ].freeze
+
+      payload = described_class.materialize(entry, OpenTrace.config)
+
+      expect(payload[:metadata][:request_id]).to eq("req-1")
+      expect(payload[:metadata]).not_to have_key(:user_id)
+    end
   end
 end
