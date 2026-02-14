@@ -105,6 +105,50 @@ RSpec.describe OpenTrace::CircuitBreaker do
     end
   end
 
+  describe "full recovery cycle" do
+    it "recovers from open through half_open to closed" do
+      # Open the circuit
+      3.times { breaker.record_failure }
+      expect(breaker.state).to eq(:open)
+      expect(breaker.allow_request?).to be false
+
+      # Wait for recovery timeout
+      sleep(1.1)
+
+      # First request transitions to half_open and is allowed (probe)
+      expect(breaker.allow_request?).to be true
+      expect(breaker.state).to eq(:half_open)
+
+      # Probe succeeds — circuit closes
+      breaker.record_success
+      expect(breaker.state).to eq(:closed)
+
+      # Normal operation resumes
+      expect(breaker.allow_request?).to be true
+    end
+
+    it "re-opens on failure during half_open and can recover again" do
+      # Open, wait, transition to half_open
+      3.times { breaker.record_failure }
+      sleep(1.1)
+      breaker.allow_request? # probe allowed
+      expect(breaker.state).to eq(:half_open)
+
+      # Probe fails — back to open
+      breaker.record_failure
+      expect(breaker.state).to eq(:open)
+
+      # Wait again, try another probe
+      sleep(1.1)
+      expect(breaker.allow_request?).to be true
+      expect(breaker.state).to eq(:half_open)
+
+      # This time it succeeds
+      breaker.record_success
+      expect(breaker.state).to eq(:closed)
+    end
+  end
+
   describe "thread safety" do
     it "handles concurrent access without errors" do
       threads = 20.times.map do

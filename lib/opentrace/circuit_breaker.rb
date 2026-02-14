@@ -14,6 +14,7 @@ module OpenTrace
       @state             = CLOSED
       @failure_count     = 0
       @last_failure_at   = nil
+      @half_open_probe_sent = false
       @mutex             = Mutex.new
     end
 
@@ -25,12 +26,18 @@ module OpenTrace
         when OPEN
           if Time.now - @last_failure_at >= @recovery_timeout
             @state = HALF_OPEN
+            @half_open_probe_sent = true
             true
           else
             false
           end
         when HALF_OPEN
-          false
+          if @half_open_probe_sent
+            false
+          else
+            @half_open_probe_sent = true
+            true
+          end
         end
       end
     end
@@ -38,6 +45,7 @@ module OpenTrace
     def record_success
       @mutex.synchronize do
         @failure_count = 0
+        @half_open_probe_sent = false
         @state = CLOSED
       end
     end
@@ -46,7 +54,12 @@ module OpenTrace
       @mutex.synchronize do
         @failure_count += 1
         @last_failure_at = Time.now
-        @state = OPEN if @failure_count >= @failure_threshold
+        if @state == HALF_OPEN
+          @half_open_probe_sent = false
+          @state = OPEN
+        elsif @failure_count >= @failure_threshold
+          @state = OPEN
+        end
       end
     end
 
@@ -55,6 +68,7 @@ module OpenTrace
         @state = CLOSED
         @failure_count = 0
         @last_failure_at = nil
+        @half_open_probe_sent = false
       end
     end
   end

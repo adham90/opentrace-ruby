@@ -322,11 +322,20 @@ module OpenTrace
       @rate_limit_until = Time.now + retry_after
 
       # Re-enqueue batch items if space allows
+      re_enqueued = 0
       batch.each do |payload|
         break if @queue.size >= MAX_QUEUE_SIZE
-        @queue.push(payload)
-      rescue ClosedQueueError
-        break
+        begin
+          @queue.push(payload)
+          re_enqueued += 1
+        rescue ClosedQueueError
+          break
+        end
+      end
+      dropped = batch.size - re_enqueued
+      if dropped > 0
+        @stats.increment(:dropped_error, dropped)
+        fire_on_drop(dropped, :shutdown)
       end
     end
 
@@ -404,6 +413,8 @@ module OpenTrace
     end
 
     def unix_socket_send(json)
+      require "socket" unless defined?(UNIXSocket)
+
       payload = if @config.compression && json.bytesize > @config.compression_threshold
                   gzip_compress(json)
                 else
