@@ -23,7 +23,7 @@ RSpec.describe "Error fingerprinting" do
       a_request(:post, "https://opentrace.test/api/logs")
         .with { |req|
           body = parse_log_body(req)
-          fp = body["metadata"]["error_fingerprint"]
+          fp = body["error_fingerprint"]
           fp.is_a?(String) && fp.length == 12
         }
     ).to have_been_made

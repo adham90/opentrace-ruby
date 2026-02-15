@@ -206,7 +206,7 @@ RSpec.describe "SQL subscriber" do
     expect(
       a_request(:post, "https://opentrace.test/api/logs")
         .with { |req|
-          parse_log_body(req)["metadata"]["request_id"] == "req-sql-test"
+          parse_log_body(req)["request_id"] == "req-sql-test"
         }
     ).to have_been_made
   ensure

@@ -54,7 +54,7 @@ RSpec.describe "Context/metadata payload integration" do
             body = parse_log_body(req)
             body["metadata"]["user_id"] == 77 &&
               body["metadata"]["org"] == "widgets" &&
-              body["metadata"]["request_id"] == "req-ctx-bug"
+              body["request_id"] == "req-ctx-bug"
           }
       ).to have_been_made.once
     end
@@ -191,7 +191,7 @@ RSpec.describe "Context/metadata payload integration" do
             meta = body["metadata"]
             meta["user_id"] == 123 &&
               meta["role"] == "admin" &&
-              meta["request_id"] == "req-middleware-1" &&
+              body["request_id"] == "req-middleware-1" &&
               meta["sql_query_count"] == 5 &&
               body["message"].include?("GET /dashboard 200")
           }

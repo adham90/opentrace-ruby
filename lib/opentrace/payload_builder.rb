@@ -28,11 +28,17 @@ module OpenTrace
 
       static_ctx = OpenTrace.send(:static_context)
       static_ctx.each { |k, v| meta[k] ||= v }
-      meta[:request_id] ||= request_id if request_id
 
       # Extract trace_id from metadata if user provided it there
       meta_trace_id = meta.delete(:trace_id)
       effective_trace_id = meta_trace_id || trace_id
+
+      # Promote indexed fields to top-level (remove from metadata to avoid duplication)
+      commit_hash = meta.delete(:git_sha)
+      effective_request_id = meta.delete(:request_id) || request_id
+      exception_class = meta.delete(:exception_class)
+      error_fingerprint = meta.delete(:error_fingerprint)
+      source_file, source_line = extract_source_location(meta[:backtrace])
 
       payload = {
         timestamp: format_timestamp(ts),
@@ -43,6 +49,12 @@ module OpenTrace
         metadata: meta.compact
       }
 
+      payload[:commit_hash] = commit_hash if commit_hash
+      payload[:request_id] = effective_request_id.to_s if effective_request_id
+      payload[:exception_class] = exception_class if exception_class
+      payload[:error_fingerprint] = error_fingerprint if error_fingerprint
+      payload[:source_file] = source_file if source_file
+      payload[:source_line] = source_line if source_line && source_line > 0
       payload[:event_type] = event_type.to_s if event_type
       payload[:trace_id] = effective_trace_id.to_s if effective_trace_id
       payload[:span_id] = span_id if span_id
@@ -69,13 +81,19 @@ module OpenTrace
         meta[:user_id] = cached_ctx[:user_id]
       end
 
+      exception_class = nil
+      error_fingerprint = nil
+      source_file = nil
+      source_line = nil
+
       if exc_class
-        meta[:exception_class] = exc_class
+        exception_class = exc_class
         meta[:exception_message] = exc_message&.slice(0, 500)
         if exc_backtrace
           cleaned = clean_backtrace(exc_backtrace)
           meta[:backtrace] = cleaned.first(15)
-          meta[:error_fingerprint] = OpenTrace.send(:compute_error_fingerprint, exc_class, cleaned)
+          error_fingerprint = OpenTrace.send(:compute_error_fingerprint, exc_class, cleaned)
+          source_file, source_line = extract_source_location(cleaned)
         end
       end
 
@@ -119,6 +137,10 @@ module OpenTrace
                 end
       meta[:transaction_name] = transaction_name if transaction_name
 
+      # Promote indexed fields to top-level (remove from metadata to avoid duplication)
+      commit_hash = meta.delete(:git_sha)
+      effective_request_id = meta.delete(:request_id) || request_id
+
       payload = {
         timestamp: format_timestamp(started),
         level: level,
@@ -127,6 +149,12 @@ module OpenTrace
         message: message,
         metadata: meta.compact
       }
+      payload[:commit_hash] = commit_hash if commit_hash
+      payload[:request_id] = effective_request_id.to_s if effective_request_id
+      payload[:exception_class] = exception_class if exception_class
+      payload[:error_fingerprint] = error_fingerprint if error_fingerprint
+      payload[:source_file] = source_file if source_file
+      payload[:source_line] = source_line if source_line && source_line > 0
       payload[:trace_id] = trace_id.to_s if trace_id
       payload[:span_id] = span_id if span_id
       payload[:parent_span_id] = parent_span_id if parent_span_id
@@ -143,6 +171,22 @@ module OpenTrace
       else
         Time.now.utc.strftime("%Y-%m-%dT%H:%M:%S.%6NZ")
       end
+    end
+
+    # Extract source file and line number from the first app-relevant backtrace line.
+    # Format: "app/controllers/users_controller.rb:42:in `show'"
+    def extract_source_location(backtrace)
+      return [nil, nil] unless backtrace.is_a?(Array) && !backtrace.empty?
+
+      line = backtrace.first.to_s
+      parts = line.split(":", 3)
+      return [nil, nil] if parts.length < 2
+
+      file = parts[0]
+      line_num = parts[1].to_i
+      [file, line_num]
+    rescue StandardError
+      [nil, nil]
     end
 
     def clean_backtrace(backtrace)

@@ -26,7 +26,7 @@ RSpec.describe "Request Summary Payload" do
         body["request_summary"] &&
           body["request_summary"]["controller"] == "UsersController" &&
           body["request_summary"]["sql_count"] == 3 &&
-          body["metadata"]["request_id"] == "req-1" &&
+          body["request_id"] == "req-1" &&
           !body["metadata"].key?("controller") # controller should NOT be in metadata
       }
     end

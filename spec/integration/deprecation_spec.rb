@@ -56,7 +56,7 @@ RSpec.describe "Deprecation warning subscriber" do
       a_request(:post, "https://opentrace.test/api/logs")
         .with { |req|
           body = parse_log_body(req)
-          body["metadata"]["request_id"] == "req-deprecation-test"
+          body["request_id"] == "req-deprecation-test"
         }
     ).to have_been_made
   ensure

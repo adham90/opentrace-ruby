@@ -35,7 +35,7 @@ RSpec.describe "End-to-end integration" do
               body["environment"] == "test" &&
               body["trace_id"] == "trace-int-001" &&
               body["metadata"]["user_id"] == 99 &&
-              body["metadata"]["request_id"] == "req-int-001" &&
+              body["request_id"] == "req-int-001" &&
               !body["metadata"].key?("trace_id") &&
               body["timestamp"].match?(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)
           }
@@ -235,7 +235,7 @@ RSpec.describe "End-to-end integration" do
           .with { |req|
             body = parse_log_body(req)
             body["metadata"]["user_id"] == 99 &&
-              body["metadata"]["request_id"] == "req-ctx-1"
+              body["request_id"] == "req-ctx-1"
           }
       ).to have_been_made.once
     end

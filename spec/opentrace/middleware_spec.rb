@@ -99,7 +99,7 @@ RSpec.describe OpenTrace::Middleware do
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
             body = parse_log_body(req)
-            body["metadata"]["request_id"] == "req-in-log"
+            body["request_id"] == "req-in-log"
           }
       ).to have_been_made
     end
@@ -117,7 +117,7 @@ RSpec.describe OpenTrace::Middleware do
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
             body = parse_log_body(req)
-            body["metadata"]["request_id"] == "custom-override"
+            body["request_id"] == "custom-override"
           }
       ).to have_been_made
     end

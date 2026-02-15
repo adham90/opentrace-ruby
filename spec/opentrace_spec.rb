@@ -113,7 +113,7 @@ RSpec.describe OpenTrace do
               body["message"] == "test message" &&
               body["service"] == "test-service" &&
               body["environment"] == "test" &&
-              body["metadata"]["request_id"] == "req-1" &&
+              body["request_id"] == "req-1" &&
               body["timestamp"].is_a?(String)
           }
       ).to have_been_made
@@ -437,7 +437,7 @@ RSpec.describe OpenTrace do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| parse_log_body(req)["metadata"]["git_sha"] == "abc123" }
+          .with { |req| parse_log_body(req)["commit_hash"] == "abc123" }
       ).to have_been_made
     ensure
       ENV["REVISION"] = original
@@ -477,7 +477,7 @@ RSpec.describe OpenTrace do
             body = parse_log_body(req)
             body["level"] == "ERROR" &&
               body["message"] == "something broke" &&
-              body["metadata"]["exception_class"] == "RuntimeError" &&
+              body["exception_class"] == "RuntimeError" &&
               body["metadata"]["exception_message"] == "something broke" &&
               body["metadata"]["backtrace"].is_a?(Array) &&
               body["metadata"]["backtrace"].length == 1 # gem line filtered
@@ -494,10 +494,11 @@ RSpec.describe OpenTrace do
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
-            meta = parse_log_body(req)["metadata"]
+            body = parse_log_body(req)
+            meta = body["metadata"]
             meta["order_id"] == 123 &&
               meta["user_id"] == 42 &&
-              meta["exception_class"] == "RuntimeError"
+              body["exception_class"] == "RuntimeError"
           }
       ).to have_been_made
     end
@@ -539,7 +540,7 @@ RSpec.describe OpenTrace do
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req| parse_log_body(req)["metadata"]&.key?("exception_class") }
+          .with { |req| parse_log_body(req).key?("exception_class") }
       ).not_to have_been_made
     end
 
@@ -552,8 +553,9 @@ RSpec.describe OpenTrace do
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
-            meta = parse_log_body(req)["metadata"]
-            meta["tenant"] == "acme" && meta["exception_class"] == "RuntimeError"
+            body = parse_log_body(req)
+            meta = body["metadata"]
+            meta["tenant"] == "acme" && body["exception_class"] == "RuntimeError"
           }
       ).to have_been_made
     end
@@ -641,7 +643,7 @@ RSpec.describe OpenTrace do
             body = parse_log_body(req)
             body["event_type"] == "user.registered" &&
               body["metadata"]["tenant"] == "acme" &&
-              body["metadata"]["request_id"] == "req-evt-1" &&
+              body["request_id"] == "req-evt-1" &&
               body["metadata"].key?("hostname")
           }
       ).to have_been_made

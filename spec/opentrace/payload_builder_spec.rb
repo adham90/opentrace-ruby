@@ -29,7 +29,8 @@ RSpec.describe OpenTrace::PayloadBuilder do
       expect(payload[:service]).to eq("test-service")
       expect(payload[:environment]).to eq("test")
       expect(payload[:metadata][:user_id]).to eq(42)
-      expect(payload[:metadata][:request_id]).to eq("req-1")
+      expect(payload[:request_id]).to eq("req-1")
+      expect(payload[:metadata]).not_to have_key(:request_id)
       expect(payload[:timestamp]).to match(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z\z/)
     end
 
@@ -187,7 +188,8 @@ RSpec.describe OpenTrace::PayloadBuilder do
       expect(payload[:metadata][:method]).to eq("GET")
       expect(payload[:metadata][:path]).to eq("/users/1")
       expect(payload[:metadata][:status]).to eq(200)
-      expect(payload[:metadata][:request_id]).to eq("req-1")
+      expect(payload[:request_id]).to eq("req-1")
+      expect(payload[:metadata]).not_to have_key(:request_id)
     end
 
     it "sets ERROR level for exceptions" do
@@ -202,10 +204,12 @@ RSpec.describe OpenTrace::PayloadBuilder do
       payload = described_class.materialize(entry, OpenTrace.config)
 
       expect(payload[:level]).to eq("ERROR")
-      expect(payload[:metadata][:exception_class]).to eq("RuntimeError")
+      expect(payload[:exception_class]).to eq("RuntimeError")
       expect(payload[:metadata][:exception_message]).to eq("boom")
       expect(payload[:metadata][:backtrace]).to be_a(Array)
-      expect(payload[:metadata][:error_fingerprint]).to be_a(String)
+      expect(payload[:error_fingerprint]).to be_a(String)
+      expect(payload[:source_file]).to eq("app/models/user.rb")
+      expect(payload[:source_line]).to eq(1)
     end
 
     it "sets WARN level for 4xx status" do
@@ -274,7 +278,8 @@ RSpec.describe OpenTrace::PayloadBuilder do
 
       expect(payload[:metadata][:user_id]).to eq(42)
       expect(payload[:metadata][:tenant]).to eq("acme")
-      expect(payload[:metadata][:request_id]).to eq("req-1")
+      expect(payload[:request_id]).to eq("req-1")
+      expect(payload[:metadata]).not_to have_key(:request_id)
     end
 
     it "merges extra over cached_ctx without losing context" do
@@ -306,7 +311,7 @@ RSpec.describe OpenTrace::PayloadBuilder do
 
       payload = described_class.materialize(entry, OpenTrace.config)
 
-      expect(payload[:metadata][:request_id]).to eq("req-1")
+      expect(payload[:request_id]).to eq("req-1")
       expect(payload[:metadata]).not_to have_key(:user_id)
     end
   end

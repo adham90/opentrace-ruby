@@ -75,7 +75,7 @@ RSpec.describe "ActiveJob subscriber" do
           body["level"] == "ERROR" &&
             body["message"].include?("FAILED") &&
             body["message"].include?("attempt 2") &&
-            body["metadata"]["exception_class"] == "RuntimeError" &&
+            body["exception_class"] == "RuntimeError" &&
             body["metadata"]["exception_message"] == "SMTP server busy" &&
             body["metadata"]["backtrace"].is_a?(Array)
         }
@@ -169,7 +169,7 @@ RSpec.describe "ActiveJob subscriber" do
     expect(
       a_request(:post, "https://opentrace.test/api/logs")
         .with { |req|
-          parse_log_body(req)["metadata"]["request_id"] == "req-job-test"
+          parse_log_body(req)["request_id"] == "req-job-test"
         }
     ).to have_been_made
   ensure

@@ -266,7 +266,7 @@ RSpec.describe "Rails integration" do
           .with { |req|
             body = parse_log_body(req)
             body["level"] == "ERROR" &&
-              body["metadata"]["exception_class"] == "ActiveRecord::RecordNotFound" &&
+              body["exception_class"] == "ActiveRecord::RecordNotFound" &&
               body["metadata"]["exception_message"] == "Couldn't find Order with id=99" &&
               body["metadata"]["backtrace"].is_a?(Array)
           }
