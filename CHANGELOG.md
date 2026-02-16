@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] - 2026-02-16
+
+### Added
+
+- **Rails Error Reporter subscriber**: Subscribe to `Rails.error` (Rails 7.0+) to capture ALL exceptions including those rescued by `rescue_from` in controllers. Previously, rescued exceptions showed as bare 500s with no exception_class, backtrace, or error_fingerprint
+- **Error params capture**: Automatically include sanitized request params on 500 error responses so the AI agent can diagnose what input caused the failure (without requiring `detailed_request_log: true`)
+
 ## [0.15.1] - 2026-02-16
 
 ### Changed
@@ -182,6 +189,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix for frozen middleware stack crash on Rails 7.1+
 - MIT License
 
+[0.16.0]: https://github.com/adham90/opentrace-ruby/releases/tag/v0.16.0
 [0.15.1]: https://github.com/adham90/opentrace-ruby/releases/tag/v0.15.1
 [0.15.0]: https://github.com/adham90/opentrace-ruby/releases/tag/v0.15.0
 [0.14.1]: https://github.com/adham90/opentrace-ruby/releases/tag/v0.14.1
