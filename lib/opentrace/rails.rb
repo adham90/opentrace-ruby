@@ -15,6 +15,13 @@ if defined?(::Rails::Railtie)
       config.after_initialize do |app|
         next unless OpenTrace.enabled?
 
+        # Rails Error Reporter subscriber (Rails 7.0+) — captures ALL exceptions
+        # including those rescued by rescue_from in controllers.
+        if defined?(Rails.error) && Rails.error.respond_to?(:subscribe)
+          require_relative "error_subscriber"
+          Rails.error.subscribe(OpenTrace::ErrorSubscriber.new)
+        end
+
         # Automatic log trace injection (opt-in) — wraps Rails logger formatter
         if OpenTrace.config.log_trace_injection
           require_relative "trace_formatter"
@@ -205,6 +212,13 @@ if defined?(::Rails::Railtie)
             extra = {}
             extract_params(payload, extra)
             extract_request_headers(payload, extra)
+          end
+
+          # Always include params on error responses (status >= 500)
+          # so the AI agent can diagnose what input caused the failure.
+          if !extra&.key?(:params) && payload[:status].to_i >= 500
+            extra ||= {}
+            extract_params(payload, extra)
           end
 
           # SQL counters for non-collector path (only present for sampled requests)
