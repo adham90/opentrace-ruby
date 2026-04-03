@@ -138,4 +138,40 @@ RSpec.describe OpenTrace::Config do
       expect(config.enabled).to be true
     end
   end
+
+  describe "deep capture defaults" do
+    it "capture_depth defaults to :standard" do
+      expect(config.capture_depth).to eq(:standard)
+    end
+
+    it "capture_rules stores a block" do
+      my_block = proc { |ctx| ctx }
+      config.capture_rules(&my_block)
+      expect(config.capture_rules_block).to eq(my_block)
+    end
+
+    it "per-domain overrides default to nil" do
+      expect(config.email_capture).to be_nil
+      expect(config.sql_capture).to be_nil
+      expect(config.http_capture).to be_nil
+      expect(config.audit_capture).to be_nil
+      expect(config.request_capture).to be_nil
+    end
+
+    it "max_buffer_bytes defaults to 1MB" do
+      expect(config.max_buffer_bytes).to eq(1_048_576)
+    end
+
+    it "audit_tracking defaults to false" do
+      expect(config.audit_tracking).to be false
+    end
+
+    it "audit_exclude_fields has sensible defaults" do
+      expect(config.audit_exclude_fields).to eq(%w[updated_at created_at password_digest])
+    end
+
+    it "serialization_format defaults to :msgpack" do
+      expect(config.serialization_format).to eq(:msgpack)
+    end
+  end
 end

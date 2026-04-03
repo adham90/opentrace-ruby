@@ -37,7 +37,7 @@ module OpenTrace
       commit_hash = meta.delete(:git_sha)
       effective_request_id = meta.delete(:request_id) || request_id
       exception_class = meta.delete(:exception_class)
-      error_fingerprint = meta.delete(:error_fingerprint)
+      meta.delete(:error_fingerprint) # server computes fingerprint
       source_file, source_line = extract_source_location(meta[:backtrace])
 
       payload = {
@@ -52,7 +52,6 @@ module OpenTrace
       payload[:commit_hash] = commit_hash if commit_hash
       payload[:request_id] = effective_request_id.to_s if effective_request_id
       payload[:exception_class] = exception_class if exception_class
-      payload[:error_fingerprint] = error_fingerprint if error_fingerprint
       payload[:source_file] = source_file if source_file
       payload[:source_line] = source_line if source_line && source_line > 0
       payload[:event_type] = event_type.to_s if event_type
@@ -82,7 +81,6 @@ module OpenTrace
       end
 
       exception_class = nil
-      error_fingerprint = nil
       source_file = nil
       source_line = nil
 
@@ -92,7 +90,6 @@ module OpenTrace
         if exc_backtrace
           cleaned = clean_backtrace(exc_backtrace)
           meta[:backtrace] = cleaned.first(15)
-          error_fingerprint = OpenTrace.send(:compute_error_fingerprint, exc_class, cleaned)
           source_file, source_line = extract_source_location(cleaned)
         end
       end
@@ -152,7 +149,6 @@ module OpenTrace
       payload[:commit_hash] = commit_hash if commit_hash
       payload[:request_id] = effective_request_id.to_s if effective_request_id
       payload[:exception_class] = exception_class if exception_class
-      payload[:error_fingerprint] = error_fingerprint if error_fingerprint
       payload[:source_file] = source_file if source_file
       payload[:source_line] = source_line if source_line && source_line > 0
       payload[:trace_id] = trace_id.to_s if trace_id

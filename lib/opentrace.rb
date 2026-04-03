@@ -117,7 +117,6 @@ module OpenTrace
       if exception.backtrace
         cleaned = clean_backtrace_for(exception)
         meta[:backtrace] = cleaned.first(15)
-        meta[:error_fingerprint] = compute_error_fingerprint(exception.class.name, cleaned)
       end
 
       # Capture exception cause chain (max 5 deep)
@@ -409,16 +408,6 @@ module OpenTrace
       end
     rescue StandardError
       exception.backtrace || []
-    end
-
-    def compute_error_fingerprint(exception_class, backtrace)
-      origin = if backtrace.is_a?(Array)
-                 backtrace.find { |l| l.include?("app/") || l.include?("lib/") } || backtrace.first
-               end
-      normalized_origin = origin&.gsub(/:\d+:/, ":") || "unknown"
-      Digest::MD5.hexdigest("#{exception_class}||#{normalized_origin}")[0, 12]
-    rescue StandardError
-      nil
     end
 
     # Resolve context without dup (for capturing in deferred arrays).

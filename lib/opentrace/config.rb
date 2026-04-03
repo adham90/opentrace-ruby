@@ -29,10 +29,24 @@ module OpenTrace
                   :pii_scrubbing, :pii_patterns, :pii_disabled_patterns,
                   :session_tracking,
                   :on_error, :after_send,
-                :transport, :socket_path,
-                :local_vars_capture,
-                :explain_slow_queries, :explain_threshold_ms,
-                :runtime_metrics, :runtime_metrics_interval
+                  :transport, :socket_path,
+                  :local_vars_capture,
+                  :explain_slow_queries, :explain_threshold_ms,
+                  :runtime_metrics, :runtime_metrics_interval,
+                  # Deep capture
+                  :capture_depth, :capture_rules_block,
+                  # Per-domain overrides (nil = follow capture_depth)
+                  :email_capture, :sql_capture, :http_capture,
+                  :audit_capture, :request_capture,
+                  # Buffering & safety
+                  :max_buffer_bytes, :max_total_buffer_bytes, :max_queue_bytes,
+                  # Audit trail
+                  :audit_tracking, :audit_max_events_per_request,
+                  :audit_exclude_models, :audit_exclude_fields, :audit_actor,
+                  # Body capture
+                  :max_request_body_bytes,
+                  # Serialization format
+                  :serialization_format
 
     # Custom writers that invalidate caches
     attr_reader :enabled, :min_level, :allowed_levels, :ignore_paths, :sample_rate
@@ -127,6 +141,29 @@ module OpenTrace
       @explain_threshold_ms = 100.0   # Threshold for EXPLAIN capture
       @runtime_metrics = false        # Collect GC/runtime metrics
       @runtime_metrics_interval = 30  # Interval in seconds
+      # Deep capture
+      @capture_depth = :standard
+      @capture_rules_block = nil
+      # Per-domain overrides (nil = follow capture_depth)
+      @email_capture = nil
+      @sql_capture = nil
+      @http_capture = nil
+      @audit_capture = nil
+      @request_capture = nil
+      # Buffering & safety
+      @max_buffer_bytes = 1_048_576        # 1MB per request
+      @max_total_buffer_bytes = 52_428_800 # 50MB global
+      @max_queue_bytes = 10_485_760        # 10MB
+      # Audit trail
+      @audit_tracking = false
+      @audit_max_events_per_request = 50
+      @audit_exclude_models = []
+      @audit_exclude_fields = %w[updated_at created_at password_digest]
+      @audit_actor = nil
+      # Body capture
+      @max_request_body_bytes = 262_144    # 256KB
+      # Serialization format
+      @serialization_format = :msgpack
       @level_cache = nil
       @enabled_cache = nil
     end
@@ -188,6 +225,10 @@ module OpenTrace
 
     def logger_severity
       LEVEL_TO_LOGGER_SEVERITY[min_level.to_s.downcase.to_sym] || 0
+    end
+
+    def capture_rules(&block)
+      @capture_rules_block = block
     end
 
     private

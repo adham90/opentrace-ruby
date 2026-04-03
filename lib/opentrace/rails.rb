@@ -334,8 +334,6 @@ if defined?(::Rails::Railtie)
             if payload[:exception_object].backtrace
               cleaned = clean_backtrace(payload[:exception_object].backtrace)
               metadata[:backtrace] = cleaned.first(15)
-              metadata[:error_fingerprint] = OpenTrace.send(:compute_error_fingerprint,
-                payload[:exception_object].class.name, cleaned)
             end
           end
 

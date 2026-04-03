@@ -34,7 +34,6 @@ module OpenTrace
       if error.backtrace
         cleaned = clean_backtrace(error.backtrace)
         meta[:backtrace] = cleaned.first(15)
-        meta[:error_fingerprint] = OpenTrace.send(:compute_error_fingerprint, error.class.name, cleaned)
       end
 
       # Capture exception cause chain
