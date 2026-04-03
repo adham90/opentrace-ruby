@@ -2,6 +2,7 @@
 
 require_relative "request_collector"
 require_relative "trace_context"
+require_relative "instrumentation_context"
 
 module OpenTrace
   class Middleware
@@ -19,6 +20,7 @@ module OpenTrace
       opentrace_breadcrumbs
       opentrace_session_id
       opentrace_pending_explains
+      opentrace_buffer
     ].freeze
 
     def initialize(app)
@@ -73,12 +75,46 @@ module OpenTrace
         end
       end
 
-      @app.call(env)
+      # ── Deep capture: set up InstrumentationContext ──
+      buffer = setup_buffer(env, cfg)
+
+      # ── Call the downstream app ──
+      start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      had_error = false
+
+      status, headers, body = @app.call(env)
+
+      # ── Capture response data into the buffer ──
+      capture_response(buffer, status, headers, body) if buffer
+
+      [status, headers, body]
+    rescue StandardError => e
+      had_error = true
+      raise
     ensure
+      # Calculate duration
+      duration_ms = if start_time
+                      ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time) * 1000).round(2)
+                    end
+
       # Memory snapshot after request (opt-in)
       collector = Fiber[:opentrace_collector]
       if collector && OpenTrace.config.memory_tracking && collector.memory_before
         collector.memory_after = current_rss_mb
+      end
+
+      # ── Deep capture: teardown and enqueue ──
+      begin
+        if Fiber[:opentrace_buffer]
+          doc = InstrumentationContext.teardown(
+            status: status,
+            duration_ms: duration_ms,
+            error: had_error
+          )
+          OpenTrace.client_enqueue_raw(doc) if doc
+        end
+      rescue StandardError
+        # Never affect the host app
       end
 
       cleanup_fiber_locals
@@ -89,6 +125,77 @@ module OpenTrace
 
     def cleanup_fiber_locals
       FIBER_KEYS.each { |key| Fiber[key] = nil }
+    end
+
+    # Set up the InstrumentationContext buffer and populate request fields.
+    # Wrapped in rescue so deep capture failures never affect the host app.
+    def setup_buffer(env, cfg)
+      buffer = InstrumentationContext.setup(env: env)
+
+      buffer.request_method = env["REQUEST_METHOD"]
+      buffer.request_path   = env["PATH_INFO"]
+      buffer.ip_address     = env["HTTP_X_FORWARDED_FOR"]&.split(",")&.first&.strip || env["REMOTE_ADDR"]
+      buffer.user_agent     = env["HTTP_USER_AGENT"]
+      buffer.referer        = env["HTTP_REFERER"]
+      buffer.content_type   = env["CONTENT_TYPE"]
+
+      # Capture request headers (all HTTP_* env vars, skip cookies)
+      buffer.request_headers = env
+        .select { |k, _| k.start_with?("HTTP_") && k != "HTTP_COOKIE" }
+        .transform_keys { |k| k.sub("HTTP_", "").downcase.tr("_", "-") }
+
+      # Capture request body (only if under size limit)
+      capture_request_body(buffer, env, cfg)
+
+      buffer.request_size = env["CONTENT_LENGTH"]&.to_i
+
+      buffer
+    rescue StandardError
+      # Never affect the host app — return whatever buffer we have (or nil)
+      Fiber[:opentrace_buffer]
+    end
+
+    # Read the request body from rack.input if it fits under the configured
+    # max_request_body_bytes limit.
+    def capture_request_body(buffer, env, cfg)
+      content_length = env["CONTENT_LENGTH"]&.to_i
+      return unless content_length && content_length > 0
+      return unless content_length < cfg.max_request_body_bytes
+
+      input = env["rack.input"]
+      return unless input
+
+      body = input.read
+      buffer.request_body = body if body && !body.empty?
+      input.rewind
+    rescue StandardError
+      # Never affect the host app
+    end
+
+    # Capture response status, headers, and body into the buffer.
+    # For non-streaming responses, the body content is saved.
+    # For streaming responses, only Content-Length is tracked.
+    def capture_response(buffer, status, headers, body)
+      buffer.response_status  = status
+      buffer.response_headers = headers
+
+      streaming = headers && (
+        headers["Transfer-Encoding"] == "chunked" ||
+        (headers.respond_to?(:key?) && !body.respond_to?(:to_ary))
+      )
+
+      if streaming
+        # Streaming: only track size from Content-Length header
+        buffer.response_size = headers["Content-Length"]&.to_i
+      else
+        # Non-streaming: collect body parts
+        parts = body.respond_to?(:to_ary) ? body.to_ary : []
+        collected = parts.join
+        buffer.response_body = collected unless collected.empty?
+        buffer.response_size = collected.bytesize
+      end
+    rescue StandardError
+      # Never affect the host app
     end
 
     # Extract trace context from incoming request headers.

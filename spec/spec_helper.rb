@@ -22,8 +22,10 @@ RSpec.configure do |config|
     Fiber[:opentrace_trace_id] = nil
     Fiber[:opentrace_span_id] = nil
     Fiber[:opentrace_parent_span_id] = nil
+    Fiber[:opentrace_buffer] = nil
 
     OpenTrace.reset!
+    OpenTrace::InstrumentationContext.reset!
   end
 
   config.after(:each) do

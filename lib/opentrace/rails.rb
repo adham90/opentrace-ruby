@@ -59,8 +59,9 @@ if defined?(::Rails::Railtie)
         ActiveSupport::Notifications.subscribe("sql.active_record") do |name, started, finished, id, payload|
           sql_count = Fiber[:opentrace_sql_count]
           collector = Fiber[:opentrace_collector]
+          buffer = Fiber[:opentrace_buffer]
 
-          if sql_count || collector || sql_logging
+          if sql_count || collector || sql_logging || buffer
             # Filter useless queries that fire dozens of times per request
             sql_name = payload[:name]
             if SKIP_SQL_NAMES.include?(sql_name)
@@ -105,6 +106,45 @@ if defined?(::Rails::Railtie)
             if sql_logging
               forward_sql_log(payload, duration_ms)
             end
+
+            # Deep capture — record to RequestBuffer (buffer already fetched above)
+            if buffer
+              # Capture bind values from the notification payload
+              binds = nil
+              if payload[:type_casted_binds].is_a?(Array)
+                binds = payload[:type_casted_binds].map { |v| v.is_a?(ActiveModel::Attribute) ? v.value : v } rescue payload[:type_casted_binds]
+              elsif payload[:binds].is_a?(Array)
+                binds = payload[:binds].map { |b| b.respond_to?(:value) ? b.value : b } rescue nil
+              end
+
+              # Detect if we're inside a transaction
+              in_transaction = false
+              if defined?(ActiveRecord::Base)
+                in_transaction = ActiveRecord::Base.connection.open_transactions > 0 rescue false
+              end
+
+              # Caller location — find first app frame
+              caller_loc = caller_locations(1, 20)&.find { |l| l.path&.include?("app/") || l.path&.include?("lib/") }
+              caller_str = caller_loc ? "#{caller_loc.path}:#{caller_loc.lineno}" : nil
+
+              fp ||= raw_sql ? simple_sql_fingerprint(raw_sql) : nil
+
+              buffer.record_sql(
+                raw_sql: raw_sql,
+                normalized_sql: nil,
+                binds: binds,
+                duration_ms: duration_ms,
+                name: sql_name,
+                cached: payload[:cached] || false,
+                row_count: payload[:row_count],
+                in_transaction: in_transaction,
+                fingerprint: fp,
+                table: (raw_sql =~ /\b(?:FROM|INTO|UPDATE|JOIN)\s+[`"]?(\w+)[`"]?/i) ? $1 : nil,
+                caller_location: caller_str
+              )
+
+              buffer.record_timeline(type: :sql, name: sql_name, duration_ms: duration_ms)
+            end
           end
         rescue StandardError
           # Swallow
@@ -139,6 +179,10 @@ if defined?(::Rails::Railtie)
               template = template.split("views/").last if template&.include?("views/")
 
               collector.record_view(template: template, duration_ms: duration_ms)
+
+              # Deep capture — record to RequestBuffer
+              buffer = Fiber[:opentrace_buffer]
+              buffer&.record_timeline(type: :view, name: template, duration_ms: duration_ms)
             rescue StandardError
               # Swallow
             end
@@ -160,6 +204,66 @@ if defined?(::Rails::Railtie)
                 hit: payload[:hit],
                 duration_ms: duration_ms
               )
+
+              # Deep capture — record to RequestBuffer
+              buffer = Fiber[:opentrace_buffer]
+              buffer&.record_timeline(type: :cache, name: "cache_#{action}", duration_ms: duration_ms)
+            rescue StandardError
+              # Swallow
+            end
+          end
+        end
+
+        # ActionMailer capture — records to RequestBuffer
+        ActiveSupport::Notifications.subscribe("deliver.action_mailer") do |_name, started, finished, _id, payload|
+          buffer = Fiber[:opentrace_buffer]
+          next unless buffer
+
+          duration_ms = (finished && started) ? (finished - started) * 1000.0 : 0.0
+          mail = payload[:mail]
+
+          buffer.record_email(
+            mailer_class: payload[:mailer],
+            mailer_action: payload[:action] || payload[:method_name],
+            from: mail&.from&.first,
+            to: mail&.to,
+            subject: mail&.subject,
+            body_html: mail&.html_part&.decoded,
+            body_text: mail&.text_part&.decoded || mail&.body&.decoded,
+            template: nil,
+            variables: nil,
+            attachments: mail&.attachments&.map { |a| { name: a.filename, size: a.body&.raw_source&.bytesize, content_type: a.content_type } },
+            delivery_status: payload[:perform_deliveries] == false ? "skipped" : "delivered",
+            smtp_response: nil,
+            duration_ms: duration_ms
+          )
+
+          buffer.record_timeline(type: :email, name: "#{payload[:mailer]}##{payload[:action] || payload[:method_name]}", duration_ms: duration_ms)
+        rescue StandardError
+          # Swallow
+        end
+
+        # ActiveStorage file operation tracking — records to RequestBuffer
+        if defined?(ActiveStorage)
+          %w[service_upload.active_storage service_download.active_storage service_delete.active_storage].each do |event_name|
+            ActiveSupport::Notifications.subscribe(event_name) do |_name, started, finished, _id, payload|
+              buffer = Fiber[:opentrace_buffer]
+              next unless buffer
+
+              duration_ms = (finished && started) ? (finished - started) * 1000.0 : 0.0
+              action = event_name.split(".").first.sub("service_", "")
+
+              buffer.record_file(
+                action: action,
+                filename: payload[:key],
+                size_bytes: payload[:bytesize] || payload[:content_length],
+                content_type: payload[:content_type],
+                service: payload[:service],
+                key: payload[:key],
+                duration_ms: duration_ms
+              )
+
+              buffer.record_timeline(type: :file, name: "#{action} #{payload[:key]}", duration_ms: duration_ms)
             rescue StandardError
               # Swallow
             end
@@ -195,6 +299,12 @@ if defined?(::Rails::Railtie)
             interval: OpenTrace.config.runtime_metrics_interval
           )
           @runtime_monitor.start
+        end
+
+        # Audit trail (opt-in)
+        if OpenTrace.config.audit_tracking && defined?(ActiveRecord::Base)
+          require_relative "audit_tracker"
+          ActiveRecord::Base.include(OpenTrace::AuditTracker)
         end
       end
 

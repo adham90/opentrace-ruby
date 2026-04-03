@@ -4,6 +4,38 @@ require "net/http"
 
 module OpenTrace
   module HttpTracker
+    # Max body size to capture (64KB) — avoids bloating memory with large payloads
+    MAX_BODY_CAPTURE_BYTES = 65_536
+
+    VENDOR_PATTERNS = {
+      "stripe" => /api\.stripe\.com/i,
+      "sendgrid" => /api\.sendgrid\.com/i,
+      "twilio" => /api\.twilio\.com/i,
+      "slack" => /slack\.com/i,
+      "github" => /api\.github\.com/i,
+      "aws" => /\.amazonaws\.com/i,
+      "google" => /googleapis\.com/i,
+      "mailgun" => /api\.mailgun\.net/i,
+      "postmark" => /api\.postmarkapp\.com/i,
+      "braintree" => /api\.braintreegateway\.com/i,
+      "paypal" => /api\.paypal\.com/i,
+      "shopify" => /\.myshopify\.com|\.shopify\.com/i,
+      "intercom" => /api\.intercom\.io/i,
+      "segment" => /api\.segment\.io/i,
+      "sentry" => /sentry\.io/i,
+      "datadog" => /api\.datadoghq\.com/i,
+      "plaid" => /\.plaid\.com/i,
+    }.freeze
+
+    def self.infer_vendor(host)
+      return nil unless host
+
+      VENDOR_PATTERNS.each do |vendor, pattern|
+        return vendor if pattern.match?(host)
+      end
+      nil
+    end
+
     def request(req, body = nil, &block)
       # Guard 1: skip if disabled
       return super unless OpenTrace.enabled?
@@ -26,6 +58,18 @@ module OpenTrace
       safe_path = req.path.to_s.split("?").first
       url = "#{scheme}://#{host}#{port_str}#{safe_path}"
 
+      # Capture request body (if present and under size limit)
+      req_body = nil
+      if req.body && req.body.is_a?(String) && req.body.bytesize < MAX_BODY_CAPTURE_BYTES
+        req_body = req.body
+      end
+
+      # Capture response body (if under size limit)
+      resp_body = nil
+      if response.body && response.body.is_a?(String) && response.body.bytesize < MAX_BODY_CAPTURE_BYTES
+        resp_body = response.body
+      end
+
       if collector
         collector.record_http(
           method: req.method,
@@ -34,6 +78,27 @@ module OpenTrace
           status: response.code.to_i,
           duration_ms: duration_ms
         )
+      end
+
+      buffer = Fiber[:opentrace_buffer]
+      if buffer
+        vendor = OpenTrace::HttpTracker.infer_vendor(host)
+        buffer.record_http(
+          method: req.method,
+          url: url,
+          host: host,
+          vendor: vendor,
+          status: response.code.to_i,
+          duration_ms: duration_ms,
+          request_headers: nil,  # skip headers for now to save memory
+          request_body: req_body,
+          response_headers: nil,
+          response_body: resp_body,
+          response_size: response.body&.bytesize,
+          retry_attempt: 0,
+          error_class: nil
+        )
+        buffer.record_timeline(type: :http, name: "#{req.method} #{host}", duration_ms: duration_ms)
       end
 
       response
@@ -49,6 +114,23 @@ module OpenTrace
           status: 0,
           duration_ms: duration_ms,
           error: e.class.name
+        )
+      end
+
+      buffer = Fiber[:opentrace_buffer]
+      if buffer
+        vendor = OpenTrace::HttpTracker.infer_vendor(address)
+        buffer.record_http(
+          method: req&.method,
+          url: "#{address}#{req&.path}",
+          host: address,
+          vendor: vendor,
+          status: 0,
+          duration_ms: duration_ms,
+          request_body: req_body,
+          response_body: nil,
+          response_size: nil,
+          error_class: e.class.name
         )
       end
 
