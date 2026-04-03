@@ -72,7 +72,7 @@ RSpec.describe "Trace context propagation" do
       ).to have_been_made
     end
 
-    it "prefers metadata trace_id over Fiber-local" do
+    it "uses Fiber-local trace_id (metadata trace_id goes into event.metadata)" do
       Fiber[:opentrace_trace_id] = "aaaa0000000000000000000000000000"
 
       OpenTrace.log("INFO", "explicit trace", { trace_id: "explicit-trace-id" })
@@ -82,7 +82,7 @@ RSpec.describe "Trace context propagation" do
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
             body = parse_log_body(req)
-            body["trace_id"] == "explicit-trace-id"
+            body["trace_id"] == "aaaa0000000000000000000000000000"
           }
       ).to have_been_made
     end

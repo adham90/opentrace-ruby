@@ -44,18 +44,13 @@ RSpec.describe "Performance integration" do
         "(baseline: #{baseline_avg.round(2)}ms, with OT: #{with_ot_avg.round(2)}ms)"
     end
 
-    it "context proc only runs once per request even with many log calls" do
+    it "context proc is not called during request when logs go to buffer" do
       call_count = 0
-      expensive_work_ms = 0
 
       configure_opentrace!(
         request_summary: true,
         context: -> {
           call_count += 1
-          # Simulate expensive context resolution (Browser.new, DB query, etc.)
-          start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-          100.times { "simulate_work" * 100 }  # ~0.1ms of work
-          expensive_work_ms += (Process.clock_gettime(Process::CLOCK_MONOTONIC) - start) * 1000
           { user_id: 42, email: "test@test.com", platform: "iOS" }
         }
       )
@@ -65,10 +60,9 @@ RSpec.describe "Performance integration" do
 
       middleware.call("action_dispatch.request_id" => "ctx-test")
 
-      # Context proc should only be called ONCE despite 10 log calls
-      expect(call_count).to eq(1),
-        "Context proc called #{call_count} times (expected 1). " \
-        "Total expensive work: #{expensive_work_ms.round(2)}ms"
+      # With buffer-based system, OpenTrace.log appends to buffer without resolving context
+      expect(call_count).to eq(0),
+        "Context proc called #{call_count} times (expected 0 during buffer-based request)."
     end
 
     it "handles high-throughput without degradation" do

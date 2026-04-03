@@ -43,25 +43,47 @@ if defined?(::Rails::Railtie)
           end
         end
 
-        # Subscribe to controller request notifications — push deferred :request array
+        # Subscribe to controller request notifications — populate buffer with Rails-level details
         ActiveSupport::Notifications.subscribe("process_action.action_controller") do |name, started, finished, id, payload|
-          forward_request_log(name, started, finished, id, payload)
+          buffer = Fiber[:opentrace_buffer]
+          next unless buffer
+
+          buffer.controller = payload[:controller]
+          buffer.action = payload[:action]
+          buffer.response_status = payload[:status]
+
+          # Capture exception info
+          if payload[:exception_object]
+            exc = payload[:exception_object]
+            buffer.record_log(
+              level: "ERROR",
+              message: "#{exc.class}: #{exc.message}",
+              metadata: {
+                exception_class: exc.class.name,
+                exception_message: exc.message&.slice(0, 500),
+                backtrace: exc.backtrace&.first(15)
+              }
+            )
+          end
+
+          # Capture params (detailed_request_log or on error)
+          if OpenTrace.config.detailed_request_log || payload[:status].to_i >= 500
+            extract_params_to_buffer(payload, buffer)
+          end
         rescue StandardError
           # Swallow - never affect the host app
         end
 
-        # SQL subscriber — lightweight counter + optional forwarding with filtering.
+        # SQL subscriber — optional forwarding with filtering + buffer recording.
         # Cache config values at subscribe time to avoid repeated config lookups
         # on every single SQL query (can be 50-200+ per request).
         sql_logging = OpenTrace.config.sql_logging
         explain_enabled = OpenTrace.config.explain_slow_queries
         explain_threshold = OpenTrace.config.explain_threshold_ms
         ActiveSupport::Notifications.subscribe("sql.active_record") do |name, started, finished, id, payload|
-          sql_count = Fiber[:opentrace_sql_count]
-          collector = Fiber[:opentrace_collector]
           buffer = Fiber[:opentrace_buffer]
 
-          if sql_count || collector || sql_logging || buffer
+          if buffer || sql_logging
             # Filter useless queries that fire dozens of times per request
             sql_name = payload[:name]
             if SKIP_SQL_NAMES.include?(sql_name)
@@ -80,18 +102,6 @@ if defined?(::Rails::Railtie)
 
             duration_ms = (finished && started) ? (finished - started) * 1000.0 : 0.0
 
-            # Increment per-request SQL counter
-            if sql_count
-              Fiber[:opentrace_sql_count] = sql_count + 1
-              Fiber[:opentrace_sql_total_ms] = (Fiber[:opentrace_sql_total_ms] || 0.0) + duration_ms
-            end
-
-            # Feed RequestCollector for summary (with fingerprint for duplicate detection)
-            if collector
-              fp = raw_sql ? simple_sql_fingerprint(raw_sql) : nil
-              collector.record_sql(name: sql_name, duration_ms: duration_ms, fingerprint: fp)
-            end
-
             # Flag slow queries for background EXPLAIN (opt-in)
             if explain_enabled &&
                duration_ms > explain_threshold &&
@@ -107,7 +117,7 @@ if defined?(::Rails::Railtie)
               forward_sql_log(payload, duration_ms)
             end
 
-            # Deep capture — record to RequestBuffer (buffer already fetched above)
+            # Record to RequestBuffer
             if buffer
               # Capture bind values from the notification payload
               binds = nil
@@ -127,7 +137,7 @@ if defined?(::Rails::Railtie)
               caller_loc = caller_locations(1, 20)&.find { |l| l.path&.include?("app/") || l.path&.include?("lib/") }
               caller_str = caller_loc ? "#{caller_loc.path}:#{caller_loc.lineno}" : nil
 
-              fp ||= raw_sql ? simple_sql_fingerprint(raw_sql) : nil
+              fp = raw_sql ? simple_sql_fingerprint(raw_sql) : nil
 
               buffer.record_sql(
                 raw_sql: raw_sql,
@@ -213,18 +223,14 @@ if defined?(::Rails::Railtie)
         if OpenTrace.config.view_tracking
           %w[render_template.action_view render_partial.action_view].each do |event_name|
             ActiveSupport::Notifications.subscribe(event_name) do |_name, started, finished, _id, payload|
-              collector = Fiber[:opentrace_collector]
-              next unless collector
+              buffer = Fiber[:opentrace_buffer]
+              next unless buffer
 
               duration_ms = (finished && started) ? (finished - started) * 1000.0 : 0.0
               template = payload[:identifier]
               template = template.split("views/").last if template&.include?("views/")
 
-              collector.record_view(template: template, duration_ms: duration_ms)
-
-              # Deep capture — record to RequestBuffer
-              buffer = Fiber[:opentrace_buffer]
-              buffer&.record_timeline(type: :view, name: template, duration_ms: duration_ms)
+              buffer.record_timeline(type: :view, name: template, duration_ms: duration_ms)
             rescue StandardError
               # Swallow
             end
@@ -235,21 +241,13 @@ if defined?(::Rails::Railtie)
         if OpenTrace.config.cache_tracking
           %w[cache_read.active_support cache_write.active_support cache_delete.active_support].each do |event_name|
             ActiveSupport::Notifications.subscribe(event_name) do |_name, started, finished, _id, payload|
-              collector = Fiber[:opentrace_collector]
-              next unless collector
+              buffer = Fiber[:opentrace_buffer]
+              next unless buffer
 
               duration_ms = (finished && started) ? (finished - started) * 1000.0 : 0.0
               action = event_name.split(".").first.sub("cache_", "").to_sym
 
-              collector.record_cache(
-                action: action,
-                hit: payload[:hit],
-                duration_ms: duration_ms
-              )
-
-              # Deep capture — record to RequestBuffer
-              buffer = Fiber[:opentrace_buffer]
-              buffer&.record_timeline(type: :cache, name: "cache_#{action}", duration_ms: duration_ms)
+              buffer.record_timeline(type: :cache, name: "cache_#{action}", duration_ms: duration_ms)
             rescue StandardError
               # Swallow
             end
@@ -353,92 +351,14 @@ if defined?(::Rails::Railtie)
       class << self
         private
 
-        def forward_request_log(_name, started, finished, _id, payload)
-          return unless OpenTrace.enabled?
-          return if ignored_path?(payload[:path])
+        def extract_params_to_buffer(payload, buffer)
+          controller = payload[:controller_instance]
+          return unless controller
 
-          extra = nil
-
-          # Detailed request info (opt-in)
-          if OpenTrace.config.detailed_request_log
-            extra = {}
-            extract_params(payload, extra)
-            extract_request_headers(payload, extra)
+          if controller.respond_to?(:request, true) && controller.request.respond_to?(:filtered_parameters)
+            params = controller.request.filtered_parameters.except("controller", "action")
+            buffer.request_params = params unless params.empty?
           end
-
-          # Always include params on error responses (status >= 500)
-          # so the AI agent can diagnose what input caused the failure.
-          if !extra&.key?(:params) && payload[:status].to_i >= 500
-            extra ||= {}
-            extract_params(payload, extra)
-          end
-
-          # SQL counters for non-collector path (only present for sampled requests)
-          sql_count = Fiber[:opentrace_sql_count]
-          if sql_count && !Fiber[:opentrace_collector]
-            extra ||= {}
-            extra[:sql_query_count] = sql_count
-            extra[:sql_total_ms] = Fiber[:opentrace_sql_total_ms]&.round(1)
-            extra[:n_plus_one_warning] = true if sql_count > 20
-          end
-
-          # Capture exception cause chain (eagerly, since errors are rare)
-          exc_obj = payload[:exception_object]
-          if exc_obj&.cause
-            extra ||= {}
-            extra[:exception_causes] = OpenTrace.send(:build_cause_chain, exc_obj.cause, depth: 0)
-          end
-
-          # Capture custom transaction name
-          txn_name = Fiber[:opentrace_transaction_name]
-          if txn_name
-            extra ||= {}
-            extra[:transaction_name] = txn_name
-          end
-
-          # Capture session ID
-          session_id = Fiber[:opentrace_session_id]
-          if session_id
-            extra ||= {}
-            extra[:session_id] = session_id
-          end
-
-          # Capture pending EXPLAIN queries (deferred to background thread)
-          pending_explains = Fiber[:opentrace_pending_explains]
-          if pending_explains && !pending_explains.empty?
-            extra ||= {}
-            extra[:pending_explains] = pending_explains
-          end
-
-          # Resolve context if not yet cached.
-          # With sql_logging/log_forwarding off (default), no OpenTrace.log()
-          # runs during the request, so the context proc is never evaluated.
-          cached_ctx = Fiber[:opentrace_cached_context]
-          unless cached_ctx
-            cached_ctx = OpenTrace.send(:resolve_context_raw)
-            cached_ctx = cached_ctx.is_a?(Hash) ? cached_ctx : {}
-          end
-
-          OpenTrace.client_enqueue_raw([
-            :request,
-            started,
-            finished,
-            payload[:controller],
-            payload[:action],
-            payload[:method],
-            payload[:path],
-            payload[:status],
-            payload[:exception]&.first,
-            payload[:exception]&.last,
-            payload[:exception_object]&.backtrace,
-            Fiber[:opentrace_request_id] || payload[:headers]&.env&.dig("action_dispatch.request_id"),
-            Fiber[:opentrace_trace_id],
-            Fiber[:opentrace_span_id],
-            Fiber[:opentrace_parent_span_id],
-            cached_ctx,
-            Fiber[:opentrace_collector],
-            extra
-          ].freeze)
         rescue StandardError
           # Swallow
         end
@@ -562,41 +482,6 @@ if defined?(::Rails::Railtie)
           # Swallow
         end
 
-        def extract_request_headers(payload, metadata)
-          return unless payload[:headers]&.respond_to?(:env)
-
-          env = payload[:headers].env
-          headers = {
-            request_content_type: env["CONTENT_TYPE"],
-            request_accept: env["HTTP_ACCEPT"],
-            request_user_agent: truncate(env["HTTP_USER_AGENT"], 200),
-            request_referer: env["HTTP_REFERER"]
-          }.compact
-          metadata.merge!(headers) unless headers.empty?
-        rescue StandardError
-          # Swallow
-        end
-
-        def extract_user_id
-          cached = Fiber[:opentrace_cached_context]
-          cached[:user_id] if cached&.key?(:user_id)
-        rescue StandardError
-          nil
-        end
-
-        def extract_params(payload, metadata)
-          controller = payload[:controller_instance]
-          return unless controller
-
-          if controller.respond_to?(:request, true) && controller.request.respond_to?(:filtered_parameters)
-            params = controller.request.filtered_parameters
-            params = params.except("controller", "action")
-            metadata[:params] = truncate_hash(params, 2048) unless params.empty?
-          end
-        rescue StandardError
-          # Swallow
-        end
-
         def truncate(str, max)
           return str if str.nil? || str.length <= max
           str[0, max] + "..."
@@ -627,14 +512,6 @@ if defined?(::Rails::Railtie)
           OpenTrace.config.ignore_paths.any? do |entry|
             entry.is_a?(Regexp) ? entry.match?(path) : path == entry
           end
-        end
-
-        def truncate_hash(hash, max_bytes)
-          json = JSON.generate(hash)
-          return hash if json.bytesize <= max_bytes
-          { _truncated: true, _size: json.bytesize }
-        rescue StandardError
-          { _truncated: true }
         end
       end
     end

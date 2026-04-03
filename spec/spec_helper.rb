@@ -78,9 +78,38 @@ ensure
 end
 
 # Helper to parse batch body from request (payloads are always sent as arrays)
-# Handles both compressed and uncompressed bodies
+# Handles compressed/uncompressed, JSON/MessagePack bodies.
+# Normalizes the new event-based document format so tests that check
+# body["level"], body["message"], body["metadata"] continue to work.
 def parse_log_body(req)
-  json = decompress_body(req.body)
-  body = JSON.parse(json)
-  body.is_a?(Array) ? body.first : body
+  raw = decompress_body(req.body)
+  body = begin
+    JSON.parse(raw)
+  rescue JSON::ParserError
+    require "msgpack"
+    MessagePack.unpack(raw)
+  end
+  entry = body.is_a?(Array) ? body.first : body
+
+  # Normalize event-based format: promote nested fields to top level for test compatibility
+  if entry.is_a?(Hash)
+    if entry.key?("event") && !entry.key?("message")
+      event = entry["event"]
+      if event.is_a?(Hash)
+        entry["message"]  = event["message"]  if event.key?("message")
+        entry["metadata"] = event["metadata"] if event.key?("metadata")
+        entry["event_type"] = event["type"] if event.key?("type")
+      end
+    end
+    if entry.key?("context")
+      ctx = entry["context"]
+      if ctx.is_a?(Hash)
+        %w[trace_id span_id parent_span_id request_id hostname pid].each do |k|
+          entry[k] = ctx[k] if ctx.key?(k)
+        end
+      end
+    end
+  end
+
+  entry
 end

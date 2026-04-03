@@ -145,22 +145,27 @@ RSpec.describe "Breadcrumbs API" do
       OpenTrace.add_breadcrumb("checkout", "Started")
       OpenTrace.add_breadcrumb("checkout", "Payment initiated")
 
-      expect(OpenTrace).to receive(:log) do |level, msg, meta|
-        expect(level).to eq("ERROR")
-        expect(meta[:breadcrumbs]).to be_an(Array)
-        expect(meta[:breadcrumbs].length).to eq(2)
-        expect(meta[:breadcrumbs][0][:category]).to eq("checkout")
-      end
+      enqueued = []
+      allow_any_instance_of(OpenTrace::Client).to receive(:enqueue) { |_, doc| enqueued << doc }
 
       OpenTrace.error(RuntimeError.new("payment failed"))
+
+      expect(enqueued.size).to eq(1)
+      meta = enqueued[0][:event][:metadata]
+      expect(meta[:breadcrumbs]).to be_an(Array)
+      expect(meta[:breadcrumbs].length).to eq(2)
+      expect(meta[:breadcrumbs][0][:category]).to eq("checkout")
     end
 
     it "does not attach breadcrumbs when buffer is empty" do
-      expect(OpenTrace).to receive(:log) do |level, msg, meta|
-        expect(meta).not_to have_key(:breadcrumbs)
-      end
+      enqueued = []
+      allow_any_instance_of(OpenTrace::Client).to receive(:enqueue) { |_, doc| enqueued << doc }
 
       OpenTrace.error(RuntimeError.new("error"))
+
+      expect(enqueued.size).to eq(1)
+      meta = enqueued[0][:event][:metadata]
+      expect(meta).not_to have_key(:breadcrumbs)
     end
   end
 

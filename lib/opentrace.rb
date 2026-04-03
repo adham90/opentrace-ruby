@@ -6,13 +6,22 @@ require_relative "opentrace/version"
 require_relative "opentrace/config"
 require_relative "opentrace/stats"
 require_relative "opentrace/circuit_breaker"
+require_relative "opentrace/ring_buffer"
+require_relative "opentrace/serializer"
+require_relative "opentrace/payload_builder"
+require_relative "opentrace/pipeline"
 require_relative "opentrace/client"
 require_relative "opentrace/logger"
 require_relative "opentrace/log_forwarder"
 require_relative "opentrace/middleware"
 require_relative "opentrace/trace_context"
 require_relative "opentrace/sampler"
-require_relative "opentrace/payload_builder"
+require_relative "opentrace/ulid"
+require_relative "opentrace/request_buffer"
+require_relative "opentrace/buffer_pool"
+require_relative "opentrace/capture_rules"
+require_relative "opentrace/memory_guard"
+require_relative "opentrace/instrumentation_context"
 require_relative "opentrace/sql_normalizer"
 require_relative "opentrace/breadcrumbs"
 require_relative "opentrace/source_context"
@@ -63,43 +72,23 @@ module OpenTrace
       @sampler ||= Sampler.new(config)
     end
 
-    # Push a deferred log entry as a frozen Array.
-    # All heavy work (Hash building, timestamp formatting, context merge)
-    # is deferred to the background dispatch thread via PayloadBuilder.
-    def log(level, message, metadata = {}, request_summary: nil)
+    def log(level, message, metadata = {})
       return unless enabled?
       return unless config.level_allowed?(level)
-
-      # Re-entrance guard: prevent recursive logging if the context proc
-      # or any subscriber triggers another log call (e.g. via ActiveRecord)
       return if Fiber[:opentrace_logging]
       Fiber[:opentrace_logging] = true
 
       begin
-        # Read cached context (set by middleware) or resolve fresh
-        ctx = Fiber[:opentrace_cached_context]
-        unless ctx
-          ctx = resolve_context_raw
-          # Cache if inside a request (middleware sets request_id)
-          if Fiber[:opentrace_request_id]
-            ctx = (ctx.is_a?(Hash) ? ctx : {}).freeze
-            Fiber[:opentrace_cached_context] = ctx
-          end
+        buffer = Fiber[:opentrace_buffer]
+        if buffer
+          # Inside a request -- append to buffer
+          buffer.record_log(level: level.to_s.upcase, message: message.to_s, metadata: metadata)
+          buffer.record_timeline(type: :log, name: message.to_s[0, 80])
+        else
+          # Standalone log -- build lightweight document and enqueue
+          doc = build_standalone_doc(level, message.to_s, metadata)
+          client.enqueue(doc)
         end
-
-        client.enqueue([
-          Process.clock_gettime(Process::CLOCK_REALTIME), # float timestamp
-          level,
-          message,
-          metadata,
-          ctx,
-          Fiber[:opentrace_request_id],
-          Fiber[:opentrace_trace_id],
-          Fiber[:opentrace_span_id],
-          Fiber[:opentrace_parent_span_id],
-          request_summary,
-          nil # event_type
-        ].freeze)
       ensure
         Fiber[:opentrace_logging] = nil
       end
@@ -109,46 +98,60 @@ module OpenTrace
 
     def error(exception, metadata = {})
       return unless enabled?
+      return if Fiber[:opentrace_logging]
+      Fiber[:opentrace_logging] = true
 
-      meta = metadata.is_a?(Hash) ? metadata.dup : {}
-      meta[:exception_class]   = exception.class.name
-      meta[:exception_message] = exception.message&.slice(0, 500)
+      begin
+        meta = metadata.is_a?(Hash) ? metadata.dup : {}
+        meta[:exception_class]   = exception.class.name
+        meta[:exception_message] = exception.message&.slice(0, 500)
 
-      if exception.backtrace
-        cleaned = clean_backtrace_for(exception)
-        meta[:backtrace] = cleaned.first(15)
-      end
-
-      # Capture exception cause chain (max 5 deep)
-      if exception.cause
-        meta[:exception_causes] = build_cause_chain(exception.cause, depth: 0)
-      end
-
-      # Capture source code context for the error origin
-      if exception.backtrace && config.source_context
-        cleaned = meta[:backtrace] || clean_backtrace_for(exception)
-        app_frame = cleaned&.first
-        if app_frame
-          source = SourceContext.extract(app_frame)
-          meta[:source_context] = source if source
+        if exception.backtrace
+          cleaned = clean_backtrace_for(exception)
+          meta[:backtrace] = cleaned.first(15)
         end
+
+        # Capture exception cause chain (max 5 deep)
+        if exception.cause
+          meta[:exception_causes] = build_cause_chain(exception.cause, depth: 0)
+        end
+
+        # Capture source code context for the error origin
+        if exception.backtrace && config.source_context
+          cleaned = meta[:backtrace] || clean_backtrace_for(exception)
+          app_frame = cleaned&.first
+          if app_frame
+            source = SourceContext.extract(app_frame)
+            meta[:source_context] = source if source
+          end
+        end
+
+        # Attach current breadcrumbs to error
+        crumbs = Fiber[:opentrace_breadcrumbs]
+        if crumbs && !crumbs.empty?
+          meta[:breadcrumbs] = crumbs.to_a
+        end
+
+        # Attach captured local variables (if capture_binding was called)
+        if config.local_vars_capture && exception.instance_variable_defined?(:@__opentrace_local_vars__)
+          meta[:local_variables] = exception.instance_variable_get(:@__opentrace_local_vars__)
+        end
+
+        # Fire on_error callback
+        config.on_error&.call(exception, meta) rescue nil
+
+        buffer = Fiber[:opentrace_buffer]
+        if buffer
+          # Inside a request -- record to buffer
+          buffer.record_log(level: "ERROR", message: exception.message.to_s, metadata: meta)
+          buffer.record_timeline(type: :error, name: "#{exception.class.name}: #{exception.message.to_s[0, 60]}")
+        else
+          doc = build_standalone_doc("ERROR", exception.message.to_s, meta, event_type: "error")
+          client.enqueue(doc)
+        end
+      ensure
+        Fiber[:opentrace_logging] = nil
       end
-
-      # Attach current breadcrumbs to error
-      buffer = Fiber[:opentrace_breadcrumbs]
-      if buffer && !buffer.empty?
-        meta[:breadcrumbs] = buffer.to_a
-      end
-
-      # Attach captured local variables (if capture_binding was called)
-      if config.local_vars_capture && exception.instance_variable_defined?(:@__opentrace_local_vars__)
-        meta[:local_variables] = exception.instance_variable_get(:@__opentrace_local_vars__)
-      end
-
-      # Fire on_error callback
-      config.on_error&.call(exception, meta) rescue nil
-
-      log("ERROR", exception.message.to_s, meta)
     rescue StandardError
       # Never raise to the host app
     end
@@ -159,40 +162,18 @@ module OpenTrace
       Fiber[:opentrace_logging] = true
 
       begin
-        ctx = Fiber[:opentrace_cached_context]
-        unless ctx
-          ctx = resolve_context_raw
-          if Fiber[:opentrace_request_id]
-            ctx = (ctx.is_a?(Hash) ? ctx : {}).freeze
-            Fiber[:opentrace_cached_context] = ctx
-          end
+        buffer = Fiber[:opentrace_buffer]
+        if buffer
+          # Inside a request -- record to buffer
+          buffer.record_log(level: "INFO", message: message.to_s, metadata: metadata.merge(_event_type: event_type))
+          buffer.record_timeline(type: :event, name: "#{event_type}: #{message.to_s[0, 60]}")
+        else
+          doc = build_standalone_doc("INFO", message.to_s, metadata, event_type: event_type.to_s)
+          client.enqueue(doc)
         end
-
-        client.enqueue([
-          Process.clock_gettime(Process::CLOCK_REALTIME),
-          "INFO",
-          message,
-          metadata,
-          ctx,
-          Fiber[:opentrace_request_id],
-          Fiber[:opentrace_trace_id],
-          Fiber[:opentrace_span_id],
-          Fiber[:opentrace_parent_span_id],
-          nil, # request_summary
-          event_type # event_type
-        ].freeze)
       ensure
         Fiber[:opentrace_logging] = nil
       end
-    rescue StandardError
-      # Never raise to the host app
-    end
-
-    # Push a raw entry (e.g. :request array) directly to the client queue.
-    # Used by Rails subscribers to bypass OpenTrace.log overhead.
-    def client_enqueue_raw(entry)
-      return unless enabled?
-      client.enqueue(entry)
     rescue StandardError
       # Never raise to the host app
     end
@@ -229,16 +210,6 @@ module OpenTrace
     end
 
     # Trace a block of code, recording its duration as a span.
-    #
-    #   OpenTrace.trace("stripe.charge") do
-    #     Stripe::Charge.create(amount: 2000, currency: "usd")
-    #   end
-    #
-    #   OpenTrace.trace("pdf.generate", resource: "Invoice") do |span|
-    #     span.set_tag(:pages, 42)
-    #     generate_invoice_pdf(order)
-    #   end
-    #
     def trace(operation_name, resource: nil, tags: {})
       return yield(NilSpan::INSTANCE) unless enabled?
 
@@ -252,7 +223,6 @@ module OpenTrace
         previous_span_id = Fiber[:opentrace_span_id]
         Fiber[:opentrace_span_id] = span.span_id
       rescue StandardError
-        # OpenTrace setup failed — run block without tracing
         return yield(NilSpan::INSTANCE)
       end
 
@@ -269,7 +239,6 @@ module OpenTrace
     end
 
     # Add a breadcrumb to the current request's trail.
-    # Breadcrumbs are attached to error payloads for debugging.
     def add_breadcrumb(category, message, data = nil, level: "info")
       return unless enabled?
       buffer = Fiber[:opentrace_breadcrumbs] ||= BreadcrumbBuffer.new
@@ -285,19 +254,10 @@ module OpenTrace
       # Never raise
     end
 
-    # Get the current request's breadcrumbs (for testing/debugging)
     def current_breadcrumbs
       Fiber[:opentrace_breadcrumbs]&.to_a || []
     end
 
-    # Capture local variables from a rescue block's binding and attach
-    # them to the exception for the next OpenTrace.error() call.
-    #
-    #   rescue => e
-    #     OpenTrace.capture_binding(e, binding)
-    #     OpenTrace.error(e)
-    #     raise
-    #   end
     def capture_binding(exception, binding_obj)
       return unless enabled? && config.local_vars_capture
 
@@ -335,6 +295,7 @@ module OpenTrace
       @static_context = nil
       @sampler = nil
       @at_exit_registered = nil
+      InstrumentationContext.reset!
     end
 
     private
@@ -410,33 +371,51 @@ module OpenTrace
       exception.backtrace || []
     end
 
-    # Resolve context without dup (for capturing in deferred arrays).
-    # The frozen/unfrozen Hash is captured by reference; PayloadBuilder
-    # will dup it when materializing on the background thread.
+    # Build a standalone document for log/error/event calls outside a request.
+    # Includes Fiber-local trace context when available.
+    def build_standalone_doc(level, message, metadata, event_type: "log")
+      ctx = resolve_context_raw
+      context = {
+        hostname: static_context[:hostname],
+        pid: static_context[:pid]
+      }.merge(ctx.is_a?(Hash) ? ctx : {})
+
+      # Include Fiber-local trace context
+      trace_id = Fiber[:opentrace_trace_id]
+      span_id = Fiber[:opentrace_span_id]
+      parent_span_id = Fiber[:opentrace_parent_span_id]
+      request_id = Fiber[:opentrace_request_id]
+
+      context[:trace_id] = trace_id if trace_id
+      context[:span_id] = span_id if span_id
+      context[:parent_span_id] = parent_span_id if parent_span_id
+      context[:request_id] = request_id if request_id
+
+      {
+        id: ULID.generate,
+        timestamp: Time.now.utc.strftime("%Y-%m-%dT%H:%M:%S.%6NZ"),
+        level: level.to_s.upcase,
+        service: config.service,
+        environment: config.environment,
+        version: static_context[:git_sha],
+        context: context,
+        event: {
+          type: event_type,
+          message: message,
+          metadata: metadata
+        }
+      }
+    rescue StandardError
+      { level: level.to_s.upcase, event: { type: event_type, message: message, metadata: metadata } }
+    end
+
+    # Resolve user-configured context. Returns the raw value
+    # (Hash or nil). Never raises.
     def resolve_context_raw
       case config.context
       when Proc then config.context.call
       when Hash then config.context
       end
-    rescue StandardError
-      {}
-    end
-
-    # Legacy resolve_context kept for backward compat if any external code calls it.
-    # Returns a mutable dup safe for the caller to modify.
-    def resolve_context
-      cached = Fiber[:opentrace_cached_context]
-      return cached.dup if cached
-
-      ctx = resolve_context_raw
-      result = ctx.is_a?(Hash) ? ctx : {}
-
-      if Fiber[:opentrace_request_id]
-        Fiber[:opentrace_cached_context] = result.freeze
-        return result.dup
-      end
-
-      result.dup
     rescue StandardError
       {}
     end
@@ -479,9 +458,9 @@ module OpenTrace
       level = error ? "ERROR" : "INFO"
       OpenTrace.log(level, "span:#{@operation}", meta)
 
-      # Record in RequestCollector timeline if present
-      collector = Fiber[:opentrace_collector]
-      collector&.record_span(operation: @operation, duration_ms: meta[:span_duration_ms])
+      # Record in RequestBuffer timeline if present
+      buffer = Fiber[:opentrace_buffer]
+      buffer&.record_timeline(type: :span, name: @operation, duration_ms: meta[:span_duration_ms])
     rescue StandardError
       # Never raise
     end

@@ -91,40 +91,35 @@ RSpec.describe OpenTrace::Middleware do
         .to_return(status: 201, body: '{"count":1}')
     end
 
-    it "request_id appears in log metadata" do
+    it "logs are captured in the request buffer (not sent individually)" do
+      captured_logs = nil
       app = described_class.new(->(env) {
         OpenTrace.log("INFO", "inside request")
+        buf = Fiber[:opentrace_buffer]
+        captured_logs = buf&.logs&.dup
         [200, {}, ["OK"]]
       })
 
       app.call("action_dispatch.request_id" => "req-in-log")
-      OpenTrace.shutdown(timeout: 5)
 
-      expect(
-        a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req|
-            body = parse_log_body(req)
-            body["request_id"] == "req-in-log"
-          }
-      ).to have_been_made
+      expect(captured_logs).not_to be_nil
+      expect(captured_logs.length).to eq(1)
+      expect(captured_logs.first[:message]).to eq("inside request")
     end
 
-    it "explicit request_id in metadata overrides middleware" do
+    it "metadata from log calls is captured in the buffer" do
+      captured_logs = nil
       app = described_class.new(->(env) {
         OpenTrace.log("INFO", "custom id", { request_id: "custom-override" })
+        buf = Fiber[:opentrace_buffer]
+        captured_logs = buf&.logs&.dup
         [200, {}, ["OK"]]
       })
 
       app.call("action_dispatch.request_id" => "middleware-id")
-      OpenTrace.shutdown(timeout: 5)
 
-      expect(
-        a_request(:post, "https://opentrace.test/api/logs")
-          .with { |req|
-            body = parse_log_body(req)
-            body["request_id"] == "custom-override"
-          }
-      ).to have_been_made
+      expect(captured_logs).not_to be_nil
+      expect(captured_logs.first[:metadata][:request_id]).to eq("custom-override")
     end
   end
 

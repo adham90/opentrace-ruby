@@ -37,7 +37,7 @@ RSpec.describe "Performance" do
   end
 
   describe "context proc caching" do
-    it "only evaluates context proc once per request" do
+    it "does not call context proc inside a request (buffer path)" do
       call_count = 0
       configure_opentrace!(context: -> {
         call_count += 1
@@ -51,24 +51,19 @@ RSpec.describe "Performance" do
 
       middleware.call("action_dispatch.request_id" => "perf-test")
 
-      expect(call_count).to eq(1), "Context proc was called #{call_count} times (expected 1)"
+      expect(call_count).to eq(0), "Context proc was called #{call_count} times (expected 0 inside request)"
     end
 
-    it "evaluates context proc fresh for each request" do
+    it "evaluates context proc for standalone log calls" do
       call_count = 0
       configure_opentrace!(context: -> {
         call_count += 1
         { user_id: 42 }
       })
 
-      middleware = OpenTrace::Middleware.new(->(env) {
-        OpenTrace.log("INFO", "request log")
-        [200, {}, ["OK"]]
-      })
+      3.times { OpenTrace.log("INFO", "outside request") }
 
-      3.times { middleware.call("action_dispatch.request_id" => "req-#{_1}") }
-
-      expect(call_count).to eq(3), "Context proc was called #{call_count} times (expected 3)"
+      expect(call_count).to eq(3), "Context proc was called #{call_count} times (expected 3 outside request)"
     end
 
     it "does not cache outside of request context" do
@@ -102,13 +97,13 @@ RSpec.describe "Performance" do
 
     it "allows logging after re-entrance guard clears" do
       configure_opentrace!(context: -> {
-        OpenTrace.log("INFO", "recursive — should be blocked")
+        OpenTrace.log("INFO", "recursive -- should be blocked")
         { user_id: 1 }
       })
 
       # First call
       OpenTrace.log("INFO", "first call")
-      # Guard should be cleared — second call should work
+      # Guard should be cleared -- second call should work
       OpenTrace.log("INFO", "second call")
 
       OpenTrace.shutdown(timeout: 5)
@@ -118,7 +113,8 @@ RSpec.describe "Performance" do
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
             body = JSON.parse(decompress_body(req.body))
-            body.any? { |entry| entry["message"] == "first call" }
+            body = [body] unless body.is_a?(Array)
+            body.any? { |entry| entry.dig("event", "message") == "first call" }
           }
       ).to have_been_made
 
@@ -126,7 +122,8 @@ RSpec.describe "Performance" do
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
             body = JSON.parse(decompress_body(req.body))
-            body.any? { |entry| entry["message"] == "second call" }
+            body = [body] unless body.is_a?(Array)
+            body.any? { |entry| entry.dig("event", "message") == "second call" }
           }
       ).to have_been_made
     end
@@ -167,10 +164,8 @@ RSpec.describe "Performance" do
       middleware.call("action_dispatch.request_id" => "cleanup-test")
 
       expect(Fiber[:opentrace_request_id]).to be_nil
-      expect(Fiber[:opentrace_sql_count]).to be_nil
-      expect(Fiber[:opentrace_sql_total_ms]).to be_nil
-      expect(Fiber[:opentrace_collector]).to be_nil
       expect(Fiber[:opentrace_cached_context]).to be_nil
+      expect(Fiber[:opentrace_buffer]).to be_nil
     end
 
     it "cleans up Fiber-local state even on exception" do

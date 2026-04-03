@@ -25,14 +25,10 @@ RSpec.describe "Deep capture subscribers" do
     buffer.id = "test-buf-001"
     buffer.started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     Fiber[:opentrace_buffer] = buffer
-    Fiber[:opentrace_sql_count] = 0
-    Fiber[:opentrace_sql_total_ms] = 0.0
   end
 
   after do
     Fiber[:opentrace_buffer] = nil
-    Fiber[:opentrace_sql_count] = nil
-    Fiber[:opentrace_sql_total_ms] = nil
   end
 
   # ── SQL subscriber deep capture ──
@@ -365,12 +361,6 @@ RSpec.describe "Deep capture subscribers" do
       OpenTrace::Railtie.initializer_blocks.each { |block| block.call(app) }
       OpenTrace::Railtie.config.after_initialize_blocks.each { |block| block.call(app) }
 
-      # View subscriber requires a collector for the existing code path
-      Fiber[:opentrace_collector] = OpenTrace::RequestCollector.new(max_timeline: 0)
-    end
-
-    after do
-      Fiber[:opentrace_collector] = nil
     end
 
     it "records view renders to timeline" do
@@ -409,11 +399,6 @@ RSpec.describe "Deep capture subscribers" do
       OpenTrace::Railtie.initializer_blocks.each { |block| block.call(app) }
       OpenTrace::Railtie.config.after_initialize_blocks.each { |block| block.call(app) }
 
-      Fiber[:opentrace_collector] = OpenTrace::RequestCollector.new(max_timeline: 0)
-    end
-
-    after do
-      Fiber[:opentrace_collector] = nil
     end
 
     it "records cache reads to timeline" do

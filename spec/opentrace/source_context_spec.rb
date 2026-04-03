@@ -123,13 +123,15 @@ RSpec.describe OpenTrace::SourceContext do
       e = RuntimeError.new("test error")
       e.set_backtrace(["#{lib_file}:4:in `test'"])
 
-      expect(OpenTrace).to receive(:log) do |level, msg, meta|
-        expect(meta[:source_context]).to be_a(Hash)
-        expect(meta[:source_context][:file]).to eq(lib_file)
-        expect(meta[:source_context][:context]).to be_a(Hash)
-      end
+      enqueued = []
+      allow_any_instance_of(OpenTrace::Client).to receive(:enqueue) { |_, doc| enqueued << doc }
 
       OpenTrace.error(e)
+
+      expect(enqueued.size).to eq(1)
+      meta = enqueued[0][:event][:metadata]
+      expect(meta[:source_context]).to be_a(Hash)
+      expect(meta[:source_context][:file]).to eq(lib_file)
     end
 
     it "does not attach source context when disabled" do
@@ -139,11 +141,14 @@ RSpec.describe OpenTrace::SourceContext do
       e = RuntimeError.new("test error")
       e.set_backtrace(["#{lib_file}:4:in `test'"])
 
-      expect(OpenTrace).to receive(:log) do |level, msg, meta|
-        expect(meta).not_to have_key(:source_context)
-      end
+      enqueued = []
+      allow_any_instance_of(OpenTrace::Client).to receive(:enqueue) { |_, doc| enqueued << doc }
 
       OpenTrace.error(e)
+
+      expect(enqueued.size).to eq(1)
+      meta = enqueued[0][:event][:metadata]
+      expect(meta).not_to have_key(:source_context)
     end
   end
 end

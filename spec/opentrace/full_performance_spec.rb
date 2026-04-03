@@ -147,11 +147,11 @@ RSpec.describe "Full Performance Suite" do
     end
   end
 
-  describe "Phase 3: Duplicate query detection" do
-    it "tracks 1000 queries with fingerprints under 20ms" do
-      collector = OpenTrace::RequestCollector.new(max_timeline: 0)
+  describe "Phase 3: SQL recording via RequestBuffer" do
+    it "records 1000 SQL queries with fingerprints under 20ms" do
+      buffer = OpenTrace::RequestBuffer.new
       elapsed = measure_ms do
-        collector.record_sql(name: "User Load", duration_ms: 1.0, fingerprint: "fp#{rand(50)}")
+        buffer.record_sql(raw_sql: "SELECT * FROM users WHERE id = 1", duration_ms: 1.0, name: "User Load", fingerprint: "fp#{rand(50)}")
       end
       puts "  record_sql with fingerprint 1000x: #{elapsed.round(1)}ms"
       expect(elapsed).to be < 20
@@ -298,23 +298,16 @@ RSpec.describe "Full Performance Suite" do
       expect(elapsed).to be < 200
     end
 
-    it "materializes 100 request entries under 100ms" do
-      started = Time.now
-      finished = started + 0.15
-      collector = OpenTrace::RequestCollector.new(max_timeline: 0)
-      10.times { collector.record_sql(name: "User Load", duration_ms: 1.0, fingerprint: "fp1") }
-
-      entry = [
-        :request, started, finished, "UsersController", "index",
-        "GET", "/users", 200, nil, nil, nil,
-        "req-001", "trace-001", "span-001", nil,
-        { user_id: 42 }, collector, { transaction_name: "GET /users" }
-      ].freeze
+    it "builds 100 request buffer documents under 100ms" do
+      buffer = OpenTrace::RequestBuffer.new
+      buffer.request_method = "GET"
+      buffer.request_path = "/users"
+      10.times { buffer.record_sql(raw_sql: "SELECT * FROM users", duration_ms: 1.0, name: "User Load", fingerprint: "fp1") }
 
       elapsed = measure_ms(100) do
-        OpenTrace::PayloadBuilder.materialize(entry, OpenTrace.config)
+        buffer.to_document(capture_level: :standard)
       end
-      puts "  PayloadBuilder.materialize (request) 100x: #{elapsed.round(1)}ms"
+      puts "  RequestBuffer.to_document 100x: #{elapsed.round(1)}ms"
       expect(elapsed).to be < 100
     end
   end

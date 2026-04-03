@@ -53,10 +53,10 @@ RSpec.describe OpenTrace::RuntimeMonitor do
       monitor.stop
 
       # Should have enqueued at least one event
-      events = enqueued.select { |e| e.is_a?(Array) && e[10] == "runtime.metrics" }
+      events = enqueued.select { |e| e.is_a?(Hash) && e.dig(:event, :type) == "runtime.metrics" }
       expect(events).not_to be_empty
 
-      metadata = events.first[3]
+      metadata = events.first.dig(:event, :metadata)
       expect(metadata).to have_key(:gc_count)
       expect(metadata).to have_key(:gc_major_count)
       expect(metadata).to have_key(:gc_minor_count)
