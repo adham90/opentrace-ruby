@@ -144,6 +144,48 @@ if defined?(::Rails::Railtie)
               )
 
               buffer.record_timeline(type: :sql, name: sql_name, duration_ms: duration_ms)
+
+              # Detect bulk operations (UPDATE/DELETE/INSERT without matching AR callback)
+              # These skip ActiveRecord callbacks, so the audit trail misses them.
+              begin
+                if OpenTrace.config.audit_tracking
+                  bulk_sql = raw_sql.to_s.strip
+                  if bulk_sql.match?(/\A(UPDATE|DELETE FROM|INSERT INTO)\b/i) &&
+                     !bulk_sql.match?(/\AINSERT INTO "?(\w+)"?\s+VALUES\s+\(/i) # Skip single-row INSERTs (AR callbacks handle these)
+                    # Check if this looks like a bulk operation (has WHERE clause for UPDATE/DELETE, or multi-row INSERT)
+                    is_bulk = case
+                              when bulk_sql.match?(/\AUPDATE\b/i)
+                                true # All UPDATEs in SQL subscriber are from update_all (AR single-row updates use callbacks)
+                              when bulk_sql.match?(/\ADELETE FROM\b/i)
+                                true # All DELETEs in SQL subscriber are from delete_all
+                              when bulk_sql.match?(/\AINSERT INTO\b.*VALUES.*,.*VALUES/i) || bulk_sql.match?(/\AINSERT INTO\b.*SELECT/i)
+                                true # Multi-row INSERT or INSERT...SELECT
+                              else
+                                false
+                              end
+
+                    if is_bulk
+                      # Extract table name
+                      table = if bulk_sql =~ /\b(?:UPDATE|DELETE FROM|INSERT INTO)\s+[`"]?(\w+)[`"]?/i
+                                $1
+                              end
+
+                      buffer.record_audit(
+                        action: "bulk_#{bulk_sql.split(/\s+/).first.downcase}",
+                        record_type: table,
+                        record_id: nil,
+                        actor_id: nil,
+                        actor_type: "SQL",
+                        changed_fields: nil,
+                        full_before: nil,
+                        full_after: { "sql" => raw_sql.to_s.slice(0, 500), "note" => "bulk operation — no before/after diff available" }
+                      )
+                    end
+                  end
+                end
+              rescue StandardError
+                # Never affect the host app
+              end
             end
           end
         rescue StandardError

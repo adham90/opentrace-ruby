@@ -486,4 +486,58 @@ RSpec.describe "Deep capture subscribers" do
       expect(buffer.sql_captures.size).to eq(1)
     end
   end
+
+  # ── Bulk operation detection ──
+
+  describe "bulk operation detection" do
+    before do
+      OpenTrace.config.audit_tracking = true
+    end
+
+    it "detects UPDATE bulk operations" do
+      ActiveSupport::Notifications.instrument("sql.active_record",
+        name: "SQL", sql: "UPDATE users SET active = 0 WHERE last_login < '2025-01-01'") do
+        # noop
+      end
+      sleep 0.01
+      audits = buffer.instance_variable_get(:@audit_captures)
+      bulk = audits.find { |a| a[:action] == "bulk_update" }
+      expect(bulk).not_to be_nil
+      expect(bulk[:record_type]).to eq("users")
+      expect(bulk[:actor_type]).to eq("SQL")
+    end
+
+    it "detects DELETE bulk operations" do
+      ActiveSupport::Notifications.instrument("sql.active_record",
+        name: "SQL", sql: "DELETE FROM sessions WHERE expired_at < '2025-01-01'") do
+        # noop
+      end
+      sleep 0.01
+      audits = buffer.instance_variable_get(:@audit_captures)
+      bulk = audits.find { |a| a[:action] == "bulk_delete" }
+      expect(bulk).not_to be_nil
+      expect(bulk[:record_type]).to eq("sessions")
+    end
+
+    it "does not flag regular single-row INSERTs" do
+      ActiveSupport::Notifications.instrument("sql.active_record",
+        name: "SQL", sql: "INSERT INTO users VALUES (1, 'test')") do
+        # noop
+      end
+      sleep 0.01
+      audits = buffer.instance_variable_get(:@audit_captures)
+      expect(audits.select { |a| a[:action]&.start_with?("bulk_") }).to be_empty
+    end
+
+    it "does nothing when audit_tracking is false" do
+      OpenTrace.config.audit_tracking = false
+      ActiveSupport::Notifications.instrument("sql.active_record",
+        name: "SQL", sql: "UPDATE users SET active = 0 WHERE id > 100") do
+        # noop
+      end
+      sleep 0.01
+      audits = buffer.instance_variable_get(:@audit_captures)
+      expect(audits.select { |a| a[:action]&.start_with?("bulk_") }).to be_empty
+    end
+  end
 end
