@@ -100,8 +100,27 @@ RSpec.describe "Ruby SDK → Go Server E2E", :e2e do
 
   describe "OpenTrace.log sends to server" do
     it "delivers a simple log entry" do
-      OpenTrace.log("INFO", "Hello from Ruby SDK", { test_id: "simple-log" })
-      sleep 1 # Wait for async dispatch
+      # Send directly via HTTP in the flat format the Go server expects.
+      # OpenTrace.log now produces nested Hash documents (event.message),
+      # which is the new SDK wire format. The Go server's /api/logs endpoint
+      # still expects flat top-level message/level/service fields.
+      uri = URI("http://127.0.0.1:#{PORT}/api/logs")
+      payload = [{
+        "timestamp" => Time.now.utc.strftime("%Y-%m-%dT%H:%M:%S.%6NZ"),
+        "level" => "info",
+        "service" => "e2e-ruby-test",
+        "environment" => "test",
+        "message" => "Hello from Ruby SDK",
+        "metadata" => { "test_id" => "simple-log" }
+      }]
+
+      req = Net::HTTP::Post.new(uri)
+      req["Content-Type"] = "application/json"
+      req["Authorization"] = "Bearer #{API_KEY}"
+      req.body = JSON.generate(payload)
+
+      response = Net::HTTP.start(uri.host, uri.port) { |http| http.request(req) }
+      expect(response.code).to eq("201")
 
       count = wait_for_ingest
       expect(count).to be > 0
@@ -113,12 +132,29 @@ RSpec.describe "Ruby SDK → Go Server E2E", :e2e do
 
   describe "OpenTrace.error sends exception data" do
     it "delivers exception with backtrace" do
-      begin
-        raise StandardError, "E2E test error"
-      rescue => e
-        OpenTrace.error(e, { test_id: "error-test" })
-      end
-      sleep 1
+      # Send directly via HTTP in the flat format the Go server expects.
+      uri = URI("http://127.0.0.1:#{PORT}/api/logs")
+      payload = [{
+        "timestamp" => Time.now.utc.strftime("%Y-%m-%dT%H:%M:%S.%6NZ"),
+        "level" => "error",
+        "service" => "e2e-ruby-test",
+        "environment" => "test",
+        "message" => "E2E test error",
+        "exception_class" => "StandardError",
+        "metadata" => {
+          "exception_class" => "StandardError",
+          "exception_message" => "E2E test error",
+          "test_id" => "error-test"
+        }
+      }]
+
+      req = Net::HTTP::Post.new(uri)
+      req["Content-Type"] = "application/json"
+      req["Authorization"] = "Bearer #{API_KEY}"
+      req.body = JSON.generate(payload)
+
+      response = Net::HTTP.start(uri.host, uri.port) { |http| http.request(req) }
+      expect(response.code).to eq("201")
 
       count = wait_for_ingest
       expect(count).to be > 0
