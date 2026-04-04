@@ -163,7 +163,7 @@ module OpenTrace
       # Body capture
       @max_request_body_bytes = 262_144    # 256KB
       # Serialization format
-      @serialization_format = :msgpack
+      @serialization_format = :json
       @level_cache = nil
       @enabled_cache = nil
     end

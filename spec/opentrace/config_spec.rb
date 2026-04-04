@@ -170,8 +170,8 @@ RSpec.describe OpenTrace::Config do
       expect(config.audit_exclude_fields).to eq(%w[updated_at created_at password_digest])
     end
 
-    it "serialization_format defaults to :msgpack" do
-      expect(config.serialization_format).to eq(:msgpack)
+    it "serialization_format defaults to :json" do
+      expect(config.serialization_format).to eq(:json)
     end
   end
 end

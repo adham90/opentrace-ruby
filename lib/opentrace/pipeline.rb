@@ -6,6 +6,7 @@ require "json"
 require "zlib"
 require "stringio"
 require "securerandom"
+require "socket"
 
 module OpenTrace
   # Multi-worker dispatch pipeline that processes batches in parallel.
@@ -104,21 +105,29 @@ module OpenTrace
                    end
             compressed = body != encoded
 
-            # Stage 4: Send
+            # Stage 4: Send (HTTP or Unix socket)
             Fiber[:opentrace_http_tracking_disabled] = true
             begin
-              http ||= build_http(uri)
-              request = build_request(uri, body, content_type, compressed)
-              response = http.request(request)
-
-              if response.is_a?(Net::HTTPSuccess)
-                @stats.increment(:delivered, payloads.size)
-                @stats.increment(:bytes_sent, body.bytesize)
+              if @config.transport == :unix_socket
+                unix_socket_send(body, payloads.size)
               else
-                @stats.increment(:failed, payloads.size)
-                # Close connection on error to reset state
-                http&.finish rescue nil
-                http = nil
+                http ||= build_http(uri)
+                request = build_request(uri, body, content_type, compressed)
+                response = http.request(request)
+
+                if response.is_a?(Net::HTTPSuccess)
+                  @stats.increment(:delivered, payloads.size)
+                  @stats.increment(:bytes_sent, body.bytesize)
+                  @on_success&.call(payloads.size, body.bytesize)
+                elsif response.code.to_i == 401
+                  @stats.increment(:failed, payloads.size)
+                  @on_failure&.call(payloads.size, :auth)
+                else
+                  @stats.increment(:failed, payloads.size)
+                  @on_failure&.call(payloads.size, :error)
+                  http&.finish rescue nil
+                  http = nil
+                end
               end
             ensure
               Fiber[:opentrace_http_tracking_disabled] = nil
@@ -126,6 +135,7 @@ module OpenTrace
 
           rescue IOError, SystemCallError, OpenSSL::SSL::SSLError, Timeout::Error, Net::ProtocolError => e
             @stats.increment(:failed, batch.size)
+            @on_failure&.call(batch.size, :error)
             http&.finish rescue nil
             http = nil
           rescue StandardError => e
@@ -167,6 +177,39 @@ module OpenTrace
       gz.write(string)
       gz.close
       io.string
+    end
+
+    # Send payload via Unix socket (same-machine transport, ~100x faster than HTTP).
+    # Protocol: 4-byte big-endian length prefix + payload bytes.
+    def unix_socket_send(body, count)
+      socket = UNIXSocket.new(@config.socket_path)
+      socket.write([body.bytesize].pack("N"))
+      socket.write(body)
+      socket.flush
+
+      # Read 4-byte status code response with timeout
+      if IO.select([socket], nil, nil, 5)
+        response_data = socket.read(4)
+        status = response_data&.unpack1("N") || 500
+      else
+        status = 500
+      end
+      socket.close
+
+      if status >= 200 && status < 300
+        @stats.increment(:delivered, count)
+        @stats.increment(:bytes_sent, body.bytesize)
+        @on_success&.call(count, body.bytesize)
+      else
+        @stats.increment(:failed, count)
+        @on_failure&.call(count, :error)
+      end
+    rescue Errno::ECONNREFUSED, Errno::ENOENT, Errno::ENOTSOCK => e
+      # Socket not available — count as failure
+      @stats.increment(:failed, count)
+      @on_failure&.call(count, :error)
+    rescue StandardError
+      @stats.increment(:errors)
     end
   end
 
