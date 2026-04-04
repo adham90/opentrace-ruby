@@ -12,7 +12,7 @@ module OpenTrace
     MAX_QUEUE_SIZE = 1000
     PAYLOAD_MAX_BYTES = 262_144 # 256 KB (default; use config.max_payload_bytes to override)
     MAX_RATE_LIMIT_BACKOFF = 60 # Cap Retry-After at 60 seconds
-    API_VERSION = 1
+    API_VERSION = 2
 
     attr_reader :stats
 
@@ -130,7 +130,7 @@ module OpenTrace
     end
 
     def dispatch_loop
-      @uri = URI.join(@config.endpoint.chomp("/") + "/", "api/logs")
+      @uri = URI.join(@config.endpoint.chomp("/") + "/", "api/v2/logs")
       check_server_compatibility
 
       loop do
@@ -249,9 +249,9 @@ module OpenTrace
           end
         end
         # PII scrubbing (runs on background thread)
-        if @config.pii_scrubbing && payload[:metadata]
+        if @config.pii_scrubbing && payload[:body]
           active_patterns = build_pii_patterns
-          PiiScrubber.scrub!(payload[:metadata], patterns: active_patterns)
+          PiiScrubber.scrub!(payload[:body], patterns: active_patterns)
         end
 
         fit_payload(payload)
@@ -583,24 +583,31 @@ module OpenTrace
     end
 
     def truncate_payload(payload)
-      meta = payload[:metadata]&.dup || {}
+      body = payload[:body]&.dup || {}
 
       # Truncation priority: remove largest optional fields first
-      meta.delete(:backtrace)
-      meta.delete(:params)
-      meta.delete(:job_arguments)
-      meta[:sql] = meta[:sql][0, 200] + "..." if meta[:sql].is_a?(String) && meta[:sql].length > 200
-      meta[:exception_message] = meta[:exception_message][0, 200] + "..." if meta[:exception_message].is_a?(String) && meta[:exception_message].length > 200
+      body.delete(:timeline)
+      body.delete(:queries)
 
-      result = payload.merge(metadata: meta)
-
-      # Remove timeline from request_summary (can be very large)
-      if result[:request_summary]
-        result[:request_summary] = result[:request_summary].dup
-        result[:request_summary].delete(:timeline)
+      if body[:exception].is_a?(Hash)
+        exc = body[:exception] = body[:exception].dup
+        exc.delete(:backtrace)
+        exc[:message] = exc[:message][0, 200] + "..." if exc[:message].is_a?(String) && exc[:message].length > 200
       end
 
-      result
+      if body[:context].is_a?(Hash)
+        ctx = body[:context] = body[:context].dup
+        ctx.delete(:params)
+        ctx.delete(:job_arguments)
+        ctx[:sql] = ctx[:sql][0, 200] + "..." if ctx[:sql].is_a?(String) && ctx[:sql].length > 200
+      end
+
+      if body[:request].is_a?(Hash)
+        body[:request] = body[:request].dup
+        body[:request].delete(:params)
+      end
+
+      payload.merge(body: body)
     end
   end
 end
