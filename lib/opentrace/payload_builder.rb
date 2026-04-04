@@ -38,7 +38,7 @@ module OpenTrace
       # Promote indexed fields (remove from metadata to avoid duplication)
       commit_hash = meta.delete(:git_sha)
       effective_request_id = meta.delete(:request_id) || request_id
-      exception_class = meta.delete(:exception_class)
+      error_class = meta.delete(:error_class)
       exception_message = meta.delete(:exception_message)
       meta.delete(:error_fingerprint) # server computes fingerprint
       backtrace = meta.delete(:backtrace)
@@ -74,15 +74,14 @@ module OpenTrace
         payload[:status] = req_summary[:status] if req_summary[:status]
         payload[:duration_ms] = req_summary[:duration_ms].to_i if req_summary[:duration_ms]
         payload[:controller] = req_summary[:controller] if req_summary[:controller]
-        payload[:action] = req_summary[:action] if req_summary[:action]
       end
 
       # Build body from remaining metadata + exception info
       body = {}
       body[:context] = meta.compact unless meta.empty?
 
-      if exception_class
-        exc = { class: exception_class }
+      if error_class
+        exc = { class: error_class }
         exc[:message] = exception_message&.slice(0, 500) if exception_message
         exc[:file] = source_file if source_file
         exc[:line] = source_line if source_line && source_line > 0
@@ -217,7 +216,7 @@ module OpenTrace
 
       # Remove fields that are now top-level or in body
       meta.delete(:exception_message)
-      meta.delete(:exception_class)
+      meta.delete(:error_class)
       meta.delete(:backtrace)
       meta.delete(:error_fingerprint)
 
@@ -245,7 +244,6 @@ module OpenTrace
       payload[:status] = status if status
       payload[:duration_ms] = duration_ms.round(0).to_i
       payload[:controller] = controller if controller
-      payload[:action] = action if action
 
       # Flat DB fields
       payload[:db_ms] = db_ms.to_i if db_ms
