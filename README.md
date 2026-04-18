@@ -118,7 +118,8 @@ OpenTrace.configure do |c|
   c.service     = "billing-api"
 
   # Optional
-  c.environment = "production"           # default: nil
+  c.environment = "production"           # default: auto-detected from
+                                         # OPENTRACE_ENV → Rails.env → RACK_ENV → RAILS_ENV
   c.timeout     = 1.0                    # HTTP timeout in seconds (default: 1.0)
   c.enabled     = true                   # default: true
   c.min_level   = :info                  # minimum level to forward (default: :info)
@@ -405,10 +406,11 @@ In a Rails app, add an initializer:
 ```ruby
 # config/initializers/opentrace.rb
 OpenTrace.configure do |c|
-  c.endpoint    = ENV["OPENTRACE_ENDPOINT"]
-  c.api_key     = ENV["OPENTRACE_API_KEY"]
-  c.service     = "my-rails-app"
-  c.environment = Rails.env
+  c.endpoint = ENV["OPENTRACE_ENDPOINT"]
+  c.api_key  = ENV["OPENTRACE_API_KEY"]
+  c.service  = "my-rails-app"
+  # c.environment is auto-resolved from OPENTRACE_ENV (preferred) or
+  # Rails.env, so you only need to set it explicitly for unusual cases.
 end
 ```
 

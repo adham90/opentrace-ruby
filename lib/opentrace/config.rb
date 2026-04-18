@@ -209,7 +209,37 @@ module OpenTrace
     # and lazily when settings change afterward.
     def finalize!
       @enabled_cache = nil
+      resolve_environment!
       build_level_cache!
+    end
+
+    # Resolve environment from env vars if the caller didn't set it explicitly.
+    # Fallback order:
+    #   1. explicit config (c.environment = "...")
+    #   2. ENV["OPENTRACE_ENV"]            — canonical opentrace variable
+    #   3. Rails.env                        — Rails apps, no extra config needed
+    #   4. ENV["RACK_ENV"]                  — Rack apps without Rails
+    #   5. ENV["RAILS_ENV"]                 — edge case: RAILS_ENV set but Rails not loaded
+    # The first non-empty value wins. Callers who want "no env" can explicitly
+    # clear it after finalize!, but there's rarely a reason to.
+    def resolve_environment!
+      return if @environment && !@environment.to_s.empty?
+
+      if (v = ENV["OPENTRACE_ENV"]) && !v.empty?
+        @environment = v
+        return
+      end
+      if defined?(Rails) && Rails.respond_to?(:env) && (v = Rails.env.to_s) && !v.empty?
+        @environment = v
+        return
+      end
+      if (v = ENV["RACK_ENV"]) && !v.empty?
+        @environment = v
+        return
+      end
+      if (v = ENV["RAILS_ENV"]) && !v.empty?
+        @environment = v
+      end
     end
 
     # Maps OpenTrace min_level to Ruby Logger severity constant.

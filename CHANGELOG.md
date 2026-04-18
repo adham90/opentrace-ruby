@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Auto-detect environment**: `config.environment` now resolves automatically from `OPENTRACE_ENV` → `Rails.env` → `RACK_ENV` → `RAILS_ENV` when not set explicitly. Rails apps no longer need `c.environment = Rails.env` in their initializer — the auto-detection handles it. The server pairs this with per-env scoped MCP tokens, so the env string becomes the key to which traffic a given token can see.
+
 ## [0.16.0] - 2026-02-16
 
 ### Added

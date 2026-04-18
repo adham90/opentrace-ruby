@@ -174,4 +174,88 @@ RSpec.describe OpenTrace::Config do
       expect(config.serialization_format).to eq(:json)
     end
   end
+
+  describe "#resolve_environment! / finalize!" do
+    # Clear env vars the resolver consults so tests don't depend on the
+    # outer shell. The spec suite loads a dummy Rails app, so these tests
+    # stub Rails.env when exercising the non-Rails fallback branches.
+    around do |example|
+      saved = %w[OPENTRACE_ENV RACK_ENV RAILS_ENV].each_with_object({}) do |k, h|
+        h[k] = ENV.delete(k)
+      end
+      begin
+        example.run
+      ensure
+        saved.each { |k, v| ENV[k] = v }
+      end
+    end
+
+    # Pretend Rails isn't loaded so we can exercise the RACK_ENV / RAILS_ENV
+    # tail of the fallback chain without the dummy app's Rails.env swallowing
+    # every call.
+    def without_rails(&block)
+      if defined?(Rails)
+        allow(Rails).to receive(:respond_to?).with(:env).and_return(false)
+      end
+      block.call
+    end
+
+    it "keeps an explicit environment over env vars" do
+      ENV["OPENTRACE_ENV"] = "production"
+      config.environment = "staging"
+      config.finalize!
+      expect(config.environment).to eq("staging")
+    end
+
+    it "falls back to OPENTRACE_ENV when environment is nil" do
+      ENV["OPENTRACE_ENV"] = "production"
+      config.finalize!
+      expect(config.environment).to eq("production")
+    end
+
+    it "prefers OPENTRACE_ENV over RACK_ENV" do
+      ENV["OPENTRACE_ENV"] = "production"
+      ENV["RACK_ENV"] = "staging"
+      config.finalize!
+      expect(config.environment).to eq("production")
+    end
+
+    it "prefers Rails.env over RACK_ENV / RAILS_ENV when Rails is loaded" do
+      skip "Rails not loaded in this run" unless defined?(Rails)
+      ENV["RACK_ENV"] = "staging"
+      ENV["RAILS_ENV"] = "production"
+      config.finalize!
+      expect(config.environment).to eq(Rails.env.to_s)
+    end
+
+    it "falls back to RACK_ENV when OPENTRACE_ENV and Rails are absent" do
+      without_rails do
+        ENV["RACK_ENV"] = "staging"
+        config.finalize!
+        expect(config.environment).to eq("staging")
+      end
+    end
+
+    it "falls back to RAILS_ENV when RACK_ENV and Rails are absent" do
+      without_rails do
+        ENV["RAILS_ENV"] = "production"
+        config.finalize!
+        expect(config.environment).to eq("production")
+      end
+    end
+
+    it "treats empty environment as unset (and falls back)" do
+      ENV["OPENTRACE_ENV"] = "staging"
+      config.environment = ""
+      config.finalize!
+      expect(config.environment).to eq("staging")
+    end
+
+    it "leaves environment nil when nothing is set and Rails is absent" do
+      without_rails do
+        config.finalize!
+        expect(config.environment).to be_nil
+      end
+    end
+  end
 end
