@@ -21,6 +21,7 @@ module OpenTrace
       opentrace_session_id
       opentrace_pending_explains
       opentrace_buffer
+      opentrace_buffer_allocation_bytes
     ].freeze
 
     def initialize(app)
@@ -30,6 +31,7 @@ module OpenTrace
     def call(env)
       # When OpenTrace is disabled, pass through with zero overhead
       return @app.call(env) unless OpenTrace.enabled?
+      return @app.call(env) if ignored_path?(env["PATH_INFO"])
 
       # Sampling: skip ALL Fiber-local setup for unsampled requests.
       # Subscribers check Fiber-locals and return instantly when nil.
@@ -76,7 +78,7 @@ module OpenTrace
       end
 
       # ── Deep capture: set up InstrumentationContext ──
-      buffer = setup_buffer(env, cfg)
+      buffer = setup_buffer(env, cfg) if request_capture_enabled?(cfg)
 
       # ── Call the downstream app ──
       start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -127,10 +129,32 @@ module OpenTrace
       FIBER_KEYS.each { |key| Fiber[key] = nil }
     end
 
+    def ignored_path?(path)
+      return false if path.nil?
+
+      OpenTrace.config.ignore_paths.any? do |entry|
+        entry.is_a?(Regexp) ? entry.match?(path) : path == entry
+      end
+    rescue StandardError
+      false
+    end
+
+    def request_capture_enabled?(cfg)
+      return false unless cfg.request_summary
+      return true if cfg.capture_rules_block
+      domain_overrides = [cfg.email_capture, cfg.sql_capture, cfg.http_capture, cfg.audit_capture, cfg.request_capture]
+      return true if domain_overrides.compact.any? { |level| level.to_s.downcase.to_sym != :none }
+
+      cfg.capture_depth.to_s.downcase.to_sym != :none
+    rescue StandardError
+      true
+    end
+
     # Set up the InstrumentationContext buffer and populate request fields.
     # Wrapped in rescue so deep capture failures never affect the host app.
     def setup_buffer(env, cfg)
       buffer = InstrumentationContext.setup(env: env)
+      return nil unless buffer
 
       buffer.request_method = env["REQUEST_METHOD"]
       buffer.request_path   = env["PATH_INFO"]

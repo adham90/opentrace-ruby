@@ -9,10 +9,10 @@ module OpenTrace
     # :standard — includes captures but strips request/response bodies
     # :full     — everything
     CAPTURE_LEVELS = %i[minimal standard full].freeze
-    CAPTURE_LEVEL_RANK = { minimal: 0, standard: 1, full: 2 }.freeze
+    CAPTURE_LEVEL_RANK = { none: -1, minimal: 0, standard: 1, full: 2 }.freeze
 
     # Domains that can have individual capture-level overrides
-    DOMAINS = %i[sql http email file audit log timeline].freeze
+    DOMAINS = %i[request sql http email file audit log timeline].freeze
 
     BASE_BYTE_ESTIMATE = 1024 # 1KB base overhead
 
@@ -378,7 +378,7 @@ module OpenTrace
 
     def filter_captures(captures, domain, base_rank, domain_overrides)
       rank = resolve_domain_rank(domain, base_rank, domain_overrides)
-      return nil if rank == 0 # :minimal — strip entirely
+      return nil if rank <= 0 # :none / :minimal — strip entirely
       return captures.map(&:dup) if rank >= 2 # :full — everything
 
       # :standard — strip body fields
@@ -410,6 +410,7 @@ module OpenTrace
     end
 
     def build_request_section(base_rank, domain_overrides)
+      rank = resolve_domain_rank(:request, base_rank, domain_overrides)
       section = {
         method: @request_method,
         path: @request_path,
@@ -420,13 +421,13 @@ module OpenTrace
         size: @request_size
       }.compact
 
-      if base_rank >= 2 # :full
+      if rank >= 2 # :full
         section[:headers]     = @request_headers if @request_headers
         section[:body]        = @request_body    if @request_body
         section[:params]      = @request_params  if @request_params
         section[:cookies]     = @cookies         if @cookies
         section[:session_data] = @session_data   if @session_data
-      elsif base_rank >= 1 # :standard — params but no body
+      elsif rank >= 1 # :standard — params but no body
         section[:params]      = @request_params  if @request_params
       end
 
@@ -434,12 +435,13 @@ module OpenTrace
     end
 
     def build_response_section(base_rank, domain_overrides)
+      rank = resolve_domain_rank(:request, base_rank, domain_overrides)
       section = {
         status: @response_status,
         size: @response_size
       }.compact
 
-      if base_rank >= 2 # :full
+      if rank >= 2 # :full
         section[:headers] = @response_headers if @response_headers
         section[:body]    = @response_body    if @response_body
       end

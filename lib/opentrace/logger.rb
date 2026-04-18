@@ -24,11 +24,32 @@ module OpenTrace
     end
 
     def add(severity, message = nil, progname = nil, &block)
-      # Delegate to wrapped logger first (synchronous, as required)
-      @wrapped_logger.add(severity, message, progname, &block)
+      if block && message.nil?
+        evaluated = false
+        resolved_message = nil
+        cached_block = proc do
+          unless evaluated
+            resolved_message = block.call
+            evaluated = true
+          end
+          resolved_message
+        end
 
-      # Forward to OpenTrace, never raise
-      forward_to_opentrace(severity, message, progname, &block)
+        # Delegate to wrapped logger first (synchronous, as required)
+        @wrapped_logger.add(severity, message, progname, &cached_block)
+
+        # If the wrapped logger filtered this level, Ruby Logger never
+        # evaluates the block. Match that behavior for forwarding.
+        return true unless evaluated
+
+        forward_to_opentrace(severity, resolved_message, nil)
+      else
+        # Delegate to wrapped logger first (synchronous, as required)
+        @wrapped_logger.add(severity, message, progname)
+
+        # Forward to OpenTrace, never raise
+        forward_to_opentrace(severity, message, progname)
+      end
 
       true
     rescue StandardError

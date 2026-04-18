@@ -102,6 +102,25 @@ RSpec.describe OpenTrace::Logger do
       expect(io.string).to include("computed message")
     end
 
+    it "evaluates block form messages only once" do
+      evaluations = 0
+
+      logger.info { evaluations += 1; "computed once" }
+
+      expect(evaluations).to eq(1)
+      expect(io.string).to include("computed once")
+    end
+
+    it "does not evaluate filtered lazy blocks for forwarding" do
+      wrapped.level = ::Logger::WARN
+      filtered_logger = described_class.new(wrapped)
+      evaluations = 0
+
+      filtered_logger.info { evaluations += 1; "filtered" }
+
+      expect(evaluations).to eq(0)
+    end
+
     it "forwards block form messages to OpenTrace" do
       logger.info { "lazy message" }
       sleep 0.5

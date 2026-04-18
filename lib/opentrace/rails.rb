@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "set"
+
 if defined?(::Rails::Railtie)
   module OpenTrace
     class Railtie < ::Rails::Railtie

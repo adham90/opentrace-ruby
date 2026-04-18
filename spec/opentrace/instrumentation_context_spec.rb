@@ -7,11 +7,13 @@ RSpec.describe OpenTrace::InstrumentationContext do
   before(:each) do
     described_class.reset!
     Fiber[described_class::FIBER_KEY] = nil
+    Fiber[:opentrace_buffer_allocation_bytes] = nil
   end
 
   after(:each) do
     # Safety: ensure Fiber local is cleaned up even if a test fails mid-way
     Fiber[described_class::FIBER_KEY] = nil
+    Fiber[:opentrace_buffer_allocation_bytes] = nil
     described_class.reset!
   end
 
@@ -73,6 +75,18 @@ RSpec.describe OpenTrace::InstrumentationContext do
 
       described_class.teardown
     end
+
+    it "does not activate a buffer when the global memory guard denies allocation" do
+      guard = described_class.memory_guard
+      guard.allocate(guard.max_total_bytes)
+
+      result = described_class.setup(env: { "PATH_INFO" => "/" })
+
+      expect(result).to be_nil
+      expect(described_class.current_buffer).to be_nil
+    ensure
+      guard&.release(guard.max_total_bytes)
+    end
   end
 
   describe ".active?" do
@@ -131,12 +145,24 @@ RSpec.describe OpenTrace::InstrumentationContext do
       expect(pool.stats[:checked_out]).to eq(initial_stats[:checked_out])
     end
 
+    it "releases global memory guard allocation after teardown" do
+      guard = described_class.memory_guard
+
+      described_class.setup(env: { "PATH_INFO" => "/" })
+      expect(guard.current_bytes).to be > 0
+
+      described_class.teardown
+
+      expect(guard.current_bytes).to eq(0)
+    end
+
     it "clears Fiber local" do
       described_class.setup(env: { "PATH_INFO" => "/" })
       expect(Fiber[described_class::FIBER_KEY]).not_to be_nil
 
       described_class.teardown
       expect(Fiber[described_class::FIBER_KEY]).to be_nil
+      expect(Fiber[:opentrace_buffer_allocation_bytes]).to be_nil
     end
 
     it "returns nil when no buffer is active" do
@@ -158,6 +184,22 @@ RSpec.describe OpenTrace::InstrumentationContext do
     end
 
     context "with CaptureRules configured" do
+      it "drops the document when rules resolve to :none" do
+        rules = OpenTrace::CaptureRules.new do |r|
+          r.on_path("/drop") { :none }
+        end
+        described_class.capture_rules = rules
+
+        buffer = described_class.setup(env: { "PATH_INFO" => "/drop" })
+        buffer.request_method = "GET"
+        buffer.request_path = "/drop"
+
+        doc = described_class.teardown(status: 200, duration_ms: 1)
+
+        expect(doc).to be_nil
+        expect(described_class.current_buffer).to be_nil
+      end
+
       it "resolves capture level from rules" do
         rules = OpenTrace::CaptureRules.new do |r|
           r.on_path("/api/**") { :full }
@@ -252,25 +294,98 @@ RSpec.describe OpenTrace::InstrumentationContext do
         expect(doc[:sql]).to be_nil
       end
 
-      it "forces :minimal when memory exceeded" do
+      it "refuses new buffers when memory is already at the global limit" do
         guard = described_class.memory_guard
         max = guard.max_total_bytes
 
-        # Exceed memory limit
         guard.allocate(max)
 
-        buffer = described_class.setup(env: { "PATH_INFO" => "/" })
+        expect(described_class.setup(env: { "PATH_INFO" => "/" })).to be_nil
+        expect(described_class.teardown).to be_nil
+      ensure
+        guard&.release(max)
+      end
+    end
+
+    context "with OpenTrace config" do
+      def configure_capture!(overrides = {})
+        OpenTrace.configure do |c|
+          c.endpoint = "https://opentrace.test"
+          c.api_key = "test-key"
+          c.service = "test-app"
+          overrides.each do |key, value|
+            next if key == :capture_rules
+            c.public_send("#{key}=", value)
+          end
+          c.capture_rules(&overrides[:capture_rules]) if overrides[:capture_rules]
+        end
+      end
+
+      it "uses configured capture_depth" do
+        configure_capture!(capture_depth: :full)
+
+        buffer = described_class.setup(env: { "PATH_INFO" => "/full" })
         buffer.request_method = "POST"
-        buffer.request_path = "/data"
-        buffer.request_body = "body"
-        buffer.record_sql(raw_sql: "INSERT INTO t VALUES(1)", duration_ms: 2.0)
+        buffer.request_path = "/full"
+        buffer.request_body = "full request body"
 
-        doc = described_class.teardown
+        doc = described_class.teardown(status: 200, duration_ms: 1)
 
-        # Memory exceeded -> :minimal, so sql should be stripped
+        expect(doc[:request][:body]).to eq("full request body")
+      end
+
+      it "installs capture_rules from OpenTrace.configure" do
+        configure_capture!(
+          capture_rules: proc { |r| r.on_path("/private") { :minimal } }
+        )
+
+        buffer = described_class.setup(env: { "PATH_INFO" => "/private" })
+        buffer.request_method = "GET"
+        buffer.request_path = "/private"
+        buffer.record_sql(raw_sql: "SELECT * FROM users", duration_ms: 1.0)
+
+        doc = described_class.teardown(status: 200, duration_ms: 1)
+
         expect(doc[:sql]).to be_nil
+      end
 
-        guard.release(max)
+      it "uses configured domain overrides" do
+        configure_capture!(capture_depth: :minimal, sql_capture: :standard, request_capture: :full)
+
+        buffer = described_class.setup(env: { "PATH_INFO" => "/override" })
+        buffer.request_method = "POST"
+        buffer.request_path = "/override"
+        buffer.request_body = "request body"
+        buffer.record_sql(raw_sql: "SELECT * FROM users WHERE id = 1", normalized_sql: "SELECT * FROM users WHERE id = ?", duration_ms: 1.0)
+
+        doc = described_class.teardown(status: 200, duration_ms: 1)
+
+        expect(doc[:request][:body]).to eq("request body")
+        expect(doc[:sql]).not_to be_nil
+        expect(doc[:sql].first[:normalized_sql]).to eq("SELECT * FROM users WHERE id = ?")
+        expect(doc[:sql].first[:raw_sql]).to be_nil
+      end
+
+      it "uses configured buffer and audit limits" do
+        configure_capture!(capture_depth: :full, max_buffer_bytes: 100, audit_max_events_per_request: 1)
+
+        buffer = described_class.setup(env: { "PATH_INFO" => "/limits" })
+        buffer.request_method = "POST"
+        buffer.request_path = "/limits"
+        buffer.request_body = "x" * 500
+        2.times { |i| buffer.record_audit(action: "update", record_type: "User", record_id: i) }
+
+        doc = described_class.teardown(status: 200, duration_ms: 1)
+
+        expect(doc[:buffer_exceeded]).to be true
+        expect(doc[:audit].size).to eq(1)
+        expect(doc[:audit_truncated]).to be true
+      end
+
+      it "uses configured total memory limit" do
+        configure_capture!(max_total_buffer_bytes: 1234)
+
+        expect(described_class.memory_guard.max_total_bytes).to eq(1234)
       end
     end
   end

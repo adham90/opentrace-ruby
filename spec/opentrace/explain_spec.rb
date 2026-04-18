@@ -56,6 +56,28 @@ RSpec.describe "EXPLAIN Plan Capture" do
       payload = OpenTrace::PayloadBuilder.materialize(entry, OpenTrace.config)
       expect(payload[:message]).to include("GET /users/1 200")
     end
+
+    it "runs pending explains for raw request documents on the background materialization path" do
+      result = double("result", rows: [["SCAN users"]])
+      connection = double("connection", execute: result)
+      pool = double("pool")
+      allow(pool).to receive(:with_connection).and_yield(connection)
+
+      stub_const("ActiveRecord", Module.new)
+      stub_const("ActiveRecord::Base", double("ActiveRecord::Base", connection_pool: pool))
+
+      doc = {
+        started_at: Process.clock_gettime(Process::CLOCK_MONOTONIC),
+        request: { method: "GET", path: "/users" },
+        response: { status: 200 },
+        pending_explains: [{ sql: "SELECT * FROM users", duration_ms: 150.0, name: "User Load" }]
+      }
+
+      payload = OpenTrace::PayloadBuilder.materialize([:raw_document, doc], OpenTrace.config)
+
+      expect(payload.dig(:body, :queries).first[:explain_plan]).to eq("SCAN users")
+      expect(connection).to have_received(:execute).with("EXPLAIN SELECT * FROM users")
+    end
   end
 
   describe "Middleware cleanup" do

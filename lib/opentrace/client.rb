@@ -6,6 +6,7 @@ require "json"
 require "zlib"
 require "stringio"
 require "securerandom"
+require_relative "serializer"
 
 module OpenTrace
   class Client
@@ -20,6 +21,8 @@ module OpenTrace
       @config = config
       @sampler = sampler
       @queue  = Thread::Queue.new
+      @queue_bytes = 0
+      @queue_bytes_mutex = Mutex.new
       @mutex  = Mutex.new
       @thread = nil
       @pid    = Process.pid
@@ -46,20 +49,23 @@ module OpenTrace
 
       reset_after_fork! if forked?
 
-      # Drop newest if queue is full
-      if @queue.size >= MAX_QUEUE_SIZE
+      byte_size = estimate_payload_bytes(payload)
+      unless push_queue_item(payload, byte_size: byte_size)
         @stats.increment(:dropped_queue_full)
         fire_on_drop(1, :queue_full)
         return
       end
 
-      @queue.push(payload)
       @stats.increment(:enqueued)
       ensure_thread_running
     end
 
     def queue_size
       @queue.size
+    end
+
+    def queue_byte_size
+      @queue_bytes_mutex.synchronize { @queue_bytes }
     end
 
     def circuit_state
@@ -73,6 +79,7 @@ module OpenTrace
     def stats_snapshot
       @stats.to_h.merge(
         queue_size: queue_size,
+        queue_byte_size: queue_byte_size,
         circuit_state: circuit_state,
         auth_suspended: @auth_suspended,
         server_capabilities: @server_capabilities
@@ -99,6 +106,8 @@ module OpenTrace
       # Re-create everything cleanly in the child process.
       @pid    = Process.pid
       @queue  = Thread::Queue.new
+      @queue_bytes = 0
+      @queue_bytes_mutex = Mutex.new
       @mutex  = Mutex.new
       @thread = nil
       @http   = nil # Parent's connection is unusable after fork
@@ -178,8 +187,8 @@ module OpenTrace
         # Non-blocking drain: grab everything currently in the queue
         while batch.size < @config.batch_size
           begin
-            item = @queue.pop(true) # non_block = true
-            batch << item
+            item = unwrap_queue_item(@queue.pop(true)) # non_block = true
+            batch << item if item
           rescue ThreadError, ClosedQueueError
             break # queue empty or closed
           end
@@ -216,9 +225,9 @@ module OpenTrace
       if timeout <= 0
         # Deadline already passed — still try a non-blocking pop in case
         # items arrived while we were busy (e.g. during version check).
-        @queue.pop(true)
+        unwrap_queue_item(@queue.pop(true))
       else
-        @queue.pop(timeout: [timeout, MAX_POP_WAIT].min)
+        unwrap_queue_item(@queue.pop(timeout: [timeout, MAX_POP_WAIT].min))
       end
     rescue ThreadError, ClosedQueueError
       nil
@@ -324,9 +333,8 @@ module OpenTrace
       # Re-enqueue batch items if space allows
       re_enqueued = 0
       batch.each do |payload|
-        break if @queue.size >= MAX_QUEUE_SIZE
         begin
-          @queue.push(payload)
+          break unless push_queue_item(payload)
           re_enqueued += 1
         rescue ClosedQueueError
           break
@@ -502,6 +510,50 @@ module OpenTrace
       result
     rescue StandardError
       PiiScrubber::PATTERNS.values
+    end
+
+    def push_queue_item(payload, byte_size: nil)
+      byte_size ||= estimate_payload_bytes(payload)
+
+      @queue_bytes_mutex.synchronize do
+        return false if @queue.closed?
+        return false if @queue.size >= MAX_QUEUE_SIZE
+        return false if @config.max_queue_bytes && @queue_bytes + byte_size > @config.max_queue_bytes
+
+        @queue.push([payload, byte_size])
+        @queue_bytes += byte_size
+        true
+      end
+    rescue ClosedQueueError
+      false
+    end
+
+    def unwrap_queue_item(item)
+      return nil unless item
+
+      if item.is_a?(Array) && item.length == 2 && item[1].is_a?(Integer)
+        payload, byte_size = item
+        decrement_queue_bytes(byte_size)
+        payload
+      else
+        item
+      end
+    end
+
+    def decrement_queue_bytes(byte_size)
+      @queue_bytes_mutex.synchronize do
+        @queue_bytes = [0, @queue_bytes - byte_size.to_i].max
+      end
+    end
+
+    def estimate_payload_bytes(payload)
+      if defined?(Serializer)
+        Serializer.estimate_size(payload)
+      else
+        JSON.generate(payload).bytesize
+      end
+    rescue StandardError
+      1024
     end
 
     def fire_on_drop(count, reason)

@@ -119,6 +119,33 @@ RSpec.describe OpenTrace::Client do
       }.not_to raise_error
     end
 
+    it "drops messages when max_queue_bytes would be exceeded" do
+      config.max_queue_bytes = 1
+      byte_limited_client = described_class.new(config)
+      allow(byte_limited_client).to receive(:ensure_thread_running)
+
+      byte_limited_client.enqueue({ level: "INFO", message: "too large for queue" })
+
+      expect(byte_limited_client.queue_size).to eq(0)
+      expect(byte_limited_client.queue_byte_size).to eq(0)
+      expect(byte_limited_client.stats.get(:dropped_queue_full)).to eq(1)
+
+      byte_limited_client.shutdown(timeout: 1)
+    end
+
+    it "tracks queued byte size for accepted messages" do
+      config.max_queue_bytes = 10_000
+      byte_tracking_client = described_class.new(config)
+      allow(byte_tracking_client).to receive(:ensure_thread_running)
+
+      byte_tracking_client.enqueue({ level: "INFO", message: "queued" })
+
+      expect(byte_tracking_client.queue_size).to eq(1)
+      expect(byte_tracking_client.queue_byte_size).to be > 0
+
+      byte_tracking_client.shutdown(timeout: 1)
+    end
+
     it "swallows network errors silently" do
       stub_request(:post, "https://opentrace.test/api/logs")
         .to_raise(Errno::ECONNREFUSED)

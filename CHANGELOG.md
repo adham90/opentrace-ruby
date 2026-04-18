@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.3] - 2026-04-19
+
+### Fixed
+
+- **Host-app safety for deep capture config**: `ignore_paths`, `request_summary = false`, `capture_depth = :none`, per-domain capture overrides, capture rules, buffer byte caps, audit event caps, and global buffer memory limits are now enforced on the request path.
+- **Queue memory cap**: `max_queue_bytes` now tracks queued payload bytes and drops new entries when the configured queue memory budget would be exceeded.
+- **Slow-query EXPLAIN capture**: pending slow-query EXPLAIN work is carried into the background raw-document materialization path instead of being stranded on the request Fiber.
+- **Logger lazy blocks**: wrapped logger blocks are evaluated at most once, and filtered lazy log blocks are not evaluated just for OpenTrace forwarding.
+- **Request-path overhead**: raw request documents are now converted to the flat ingest schema on the background dispatch thread rather than synchronously in middleware teardown.
+- **Direct requires**: `rails` and `pii_scrubber` now require `set` directly for safer standalone loading.
+
+### Internal
+
+- Added regression coverage for middleware skip paths, capture depth/domain overrides, buffer safety limits, queue byte accounting, EXPLAIN materialization, and logger block handling.
+
 ## [0.17.2] - 2026-04-19
 
 ### Fixed

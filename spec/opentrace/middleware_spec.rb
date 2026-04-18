@@ -75,6 +75,22 @@ RSpec.describe OpenTrace::Middleware do
       expect(body).to eq(["OK"])
     end
 
+    it "skips all OpenTrace setup for ignored paths" do
+      enqueued = []
+      captured_buffer = :not_checked
+      allow(OpenTrace).to receive(:client_enqueue_raw) { |doc| enqueued << doc }
+
+      app = described_class.new(->(_env) {
+        captured_buffer = Fiber[:opentrace_buffer]
+        [200, {}, ["OK"]]
+      })
+
+      app.call("REQUEST_METHOD" => "GET", "PATH_INFO" => "/health")
+
+      expect(captured_buffer).to be_nil
+      expect(enqueued).to be_empty
+    end
+
     it "sets nil when no request_id is present" do
       OpenTrace.current_request_id = "stale"
 
@@ -494,6 +510,39 @@ RSpec.describe OpenTrace::Middleware do
         middleware.call("REQUEST_METHOD" => "GET", "PATH_INFO" => "/")
 
         expect(enqueued).to be_empty
+      end
+
+      it "does not create or enqueue a request buffer when request_summary is false" do
+        configure_opentrace!(request_summary: false)
+
+        enqueued = []
+        captured_buffer = :not_checked
+        allow(OpenTrace).to receive(:client_enqueue_raw) { |doc| enqueued << doc }
+
+        app = described_class.new(->(_env) {
+          captured_buffer = Fiber[:opentrace_buffer]
+          OpenTrace.log("INFO", "inside unsummarized request")
+          [200, { "Content-Length" => "2" }, ["OK"]]
+        })
+
+        app.call("REQUEST_METHOD" => "GET", "PATH_INFO" => "/no-summary")
+
+        expect(captured_buffer).to be_nil
+        expect(enqueued).to be_empty
+      end
+
+      it "does not create a request buffer when capture_depth is :none" do
+        configure_opentrace!(capture_depth: :none)
+
+        captured_buffer = :not_checked
+        app = described_class.new(->(_env) {
+          captured_buffer = Fiber[:opentrace_buffer]
+          [200, { "Content-Length" => "2" }, ["OK"]]
+        })
+
+        app.call("REQUEST_METHOD" => "GET", "PATH_INFO" => "/no-capture")
+
+        expect(captured_buffer).to be_nil
       end
     end
 

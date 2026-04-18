@@ -448,6 +448,23 @@ RSpec.describe OpenTrace::RequestBuffer do
       expect(doc[:email]).to be_nil
     end
 
+    it "respects :none domain overrides even when base capture is full" do
+      doc = buffer.to_document(capture_level: :full, domain_overrides: { sql_capture: :none, http_capture: :none })
+
+      expect(doc[:sql]).to be_nil
+      expect(doc[:http]).to be_nil
+      expect(doc[:email]).not_to be_nil
+    end
+
+    it "respects request_capture override for request and response bodies" do
+      doc = buffer.to_document(capture_level: :minimal, domain_overrides: { request_capture: :full })
+
+      expect(doc[:request][:body]).to eq('{"name": "Alice"}')
+      expect(doc[:request][:headers]).to eq({ "Content-Type" => "application/json" })
+      expect(doc[:response][:body]).to eq('{"id": 1}')
+      expect(doc[:response][:headers]).to eq({ "X-Request-Id" => "abc" })
+    end
+
     it "includes job fields when job_class is set" do
       buffer.job_class = "WelcomeEmailJob"
       buffer.job_id = "job-789"

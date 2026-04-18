@@ -61,6 +61,7 @@ module OpenTrace
     def configure
       yield config
       config.finalize!
+      InstrumentationContext.configure!(config)
       reset_client!
     end
 
@@ -289,61 +290,12 @@ module OpenTrace
     end
 
     # Enqueue a raw request buffer document (from InstrumentationContext).
-    # Converts the nested buffer doc to flat format before enqueueing.
+    # Defers conversion to the background dispatch thread.
     def client_enqueue_raw(doc)
       return unless enabled?
+      return unless doc.is_a?(Hash)
 
-      req = doc[:request] || {}
-      resp = doc[:response] || {}
-      duration_ms = if doc[:started_at]
-                      ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - doc[:started_at]) * 1000).round(0)
-                    end
-
-      status = resp[:status] || resp[:response_status]
-      level = if status.to_i >= 500 then "error"
-             elsif status.to_i >= 400 then "warn"
-             else "info"
-             end
-
-      message = "#{req[:method]} #{req[:path]} #{status} #{duration_ms}ms"
-
-      payload = {
-        ts: Time.now.utc.strftime("%Y-%m-%dT%H:%M:%S.%6NZ"),
-        level: level,
-        service: config.service,
-        env: config.environment,
-        message: message,
-        event_type: "http.request",
-        method: req[:method],
-        path: req[:path],
-        status: status.to_i,
-        duration_ms: duration_ms.to_i,
-        controller: doc[:controller],
-      }
-
-      payload[:trace_id] = doc[:trace_id] if doc[:trace_id]
-      payload[:span_id] = doc[:span_id] if doc[:span_id]
-      payload[:parent_span_id] = doc[:parent_span_id] if doc[:parent_span_id]
-      payload[:request_id] = doc[:request_id] if doc[:request_id]
-
-      # Pack everything else into body
-      body = {}
-      body[:request_headers] = req[:headers] if req[:headers]
-      body[:request_params] = req[:params] if req[:params]
-      body[:request_body] = req[:body] if req[:body]
-      body[:response_headers] = resp[:headers] if resp[:headers]
-      body[:response_body] = resp[:body] if resp[:body]
-      body[:sql] = doc[:sql] if doc[:sql] && !doc[:sql].empty?
-      body[:http] = doc[:http] if doc[:http] && !doc[:http].empty?
-      body[:email] = doc[:email] if doc[:email] && !doc[:email].empty?
-      body[:audit] = doc[:audit] if doc[:audit] && !doc[:audit].empty?
-      body[:logs] = doc[:logs] if doc[:logs] && !doc[:logs].empty?
-      body[:timeline] = doc[:timeline] if doc[:timeline] && !doc[:timeline].empty?
-      body[:performance] = doc[:performance] if doc[:performance]
-      body[:context] = doc[:context] if doc[:context]
-
-      payload[:body] = body unless body.empty?
-      client.enqueue(payload)
+      client.enqueue([:raw_document, doc])
     rescue StandardError
       # Never raise to the host app
     end

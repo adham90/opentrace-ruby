@@ -3,6 +3,7 @@
 require_relative "buffer_pool"
 require_relative "memory_guard"
 require_relative "capture_rules"
+require_relative "config"
 
 module OpenTrace
   class InstrumentationContext
@@ -20,6 +21,12 @@ module OpenTrace
       # Returns the buffer (for callers that need it).
       def setup(env: nil, job: nil)
         buf = buffer_pool.checkout
+        allocation_bytes = buf.byte_size
+
+        unless memory_guard.allocate(allocation_bytes)
+          buffer_pool.checkin(buf)
+          return nil
+        end
 
         buf.event_type = if env
                            :http_request
@@ -27,6 +34,7 @@ module OpenTrace
                            :job_perform
                          end
 
+        Fiber[:opentrace_buffer_allocation_bytes] = allocation_bytes
         Fiber[FIBER_KEY] = buf
         buf
       end
@@ -38,34 +46,40 @@ module OpenTrace
       # document, checks the buffer back into the pool, and clears the Fiber
       # local.
       #
-      # Returns the document Hash. The caller is responsible for enqueueing.
+      # Returns the document Hash, or nil when capture resolves to :none.
+      # The caller is responsible for enqueueing.
       def teardown(status: nil, duration_ms: nil, error: false)
         buf = Fiber[FIBER_KEY]
         return nil unless buf
 
-        # Resolve capture level
-        capture_level = resolve_capture_level(
-          buf, status: status, duration_ms: duration_ms, error: error
-        )
+        begin
+          # Resolve capture level
+          capture_level = resolve_capture_level(
+            buf, status: status, duration_ms: duration_ms, error: error
+          )
 
-        # Apply memory guard — may downgrade under pressure
-        capture_level = memory_guard.effective_level(capture_level)
+          # Apply memory guard — may downgrade under pressure
+          capture_level = memory_guard.effective_level(capture_level)
+          return nil if capture_level == :none
 
-        # Normalize: MemoryGuard returns :none when exceeded, but RequestBuffer
-        # only understands :minimal / :standard / :full. Map :none to :minimal.
-        capture_level = :minimal if capture_level == :none
+          # Build domain overrides from capture rules (if configured)
+          domain_overrides = configured_domain_overrides
 
-        # Build domain overrides from capture rules (if configured)
-        domain_overrides = {}
+          # Produce the document
+          doc = buf.to_document(capture_level: capture_level, domain_overrides: domain_overrides)
+          doc[:duration_ms] = duration_ms if duration_ms
+          doc[:pending_explains] = Fiber[:opentrace_pending_explains] if Fiber[:opentrace_pending_explains]
 
-        # Produce the document
-        doc = buf.to_document(capture_level: capture_level, domain_overrides: domain_overrides)
+          doc
+        ensure
+          allocation_bytes = Fiber[:opentrace_buffer_allocation_bytes].to_i
+          memory_guard.release(allocation_bytes) if allocation_bytes.positive?
 
-        # Return buffer to pool and clear Fiber local
-        buffer_pool.checkin(buf)
-        Fiber[FIBER_KEY] = nil
-
-        doc
+          # Return buffer to pool and clear Fiber local
+          buffer_pool.checkin(buf)
+          Fiber[FIBER_KEY] = nil
+          Fiber[:opentrace_buffer_allocation_bytes] = nil
+        end
       end
 
       # ── Convenience accessors ──
@@ -83,15 +97,28 @@ module OpenTrace
       # ── Singleton resources (lazy-initialized) ──
 
       def buffer_pool
-        @buffer_pool ||= BufferPool.new
+        cfg = active_config
+        @buffer_pool ||= BufferPool.new(
+          max_buffer_bytes: cfg.max_buffer_bytes,
+          max_audit_events: cfg.audit_max_events_per_request
+        )
       end
 
       def memory_guard
-        @memory_guard ||= MemoryGuard.new
+        cfg = active_config
+        @memory_guard ||= MemoryGuard.new(max_total_bytes: cfg.max_total_buffer_bytes)
+      end
+
+      def configure!(config)
+        @config = config
+        @buffer_pool = nil
+        @memory_guard = nil
+        @capture_rules = config.capture_rules_block ? CaptureRules.new(&config.capture_rules_block) : nil
       end
 
       # Reset singletons (for testing).
       def reset!
+        @config = nil
         @buffer_pool = nil
         @memory_guard = nil
         @capture_rules = nil
@@ -106,9 +133,10 @@ module OpenTrace
       # If CaptureRules are configured, use them; otherwise default to :standard.
       def resolve_capture_level(buf, status:, duration_ms:, error:)
         rules = capture_rules
+        base_level = configured_capture_depth
 
         unless rules
-          return :standard
+          return base_level
         end
 
         # CaptureRules.resolve expects a Rack env for path matching.
@@ -122,11 +150,35 @@ module OpenTrace
 
         rules.resolve(
           env,
-          base_level: :standard,
+          base_level: base_level,
           status: status,
           duration_ms: duration_ms,
           error: error
         )
+      end
+
+      def configured_capture_depth
+        level = active_config.capture_depth.to_s.downcase.to_sym
+        CaptureRules::LEVELS.include?(level) ? level : :standard
+      rescue StandardError
+        :standard
+      end
+
+      def configured_domain_overrides
+        cfg = active_config
+        {
+          email_capture: cfg.email_capture,
+          sql_capture: cfg.sql_capture,
+          http_capture: cfg.http_capture,
+          audit_capture: cfg.audit_capture,
+          request_capture: cfg.request_capture
+        }.compact
+      rescue StandardError
+        {}
+      end
+
+      def active_config
+        @config || (OpenTrace.respond_to?(:config) ? OpenTrace.config : Config.new)
       end
     end
   end
