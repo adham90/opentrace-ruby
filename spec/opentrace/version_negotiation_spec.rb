@@ -23,7 +23,7 @@ RSpec.describe "Version negotiation" do
       stub_request(:get, "https://opentrace.test/api/version")
         .to_return(status: 200, body: '{"api_version":1,"capabilities":["batch_ingest"]}')
       stub = stub_request(:post, "https://opentrace.test/api/logs")
-        .with(headers: { "X-API-Version" => "1" })
+        .with(headers: { "X-API-Version" => "2" })
         .to_return(status: 201, body: '{"count":1}')
 
       client.enqueue({ level: "INFO", message: "test" })
@@ -91,8 +91,8 @@ RSpec.describe "Version negotiation" do
     it "warns when server requires newer client version" do
       stub_request(:get, "https://opentrace.test/api/version")
         .to_return(status: 200, body: JSON.generate({
-          api_version: 2,
-          min_client_api_version: 2,
+          api_version: 3,
+          min_client_api_version: 3,
           capabilities: []
         }))
       stub_request(:post, "https://opentrace.test/api/logs")
@@ -101,7 +101,7 @@ RSpec.describe "Version negotiation" do
       expect {
         client.enqueue({ level: "INFO", message: "test" })
         sleep 0.5
-      }.to output(/Server requires API version >= 2/).to_stderr
+      }.to output(/Server requires API version >= 3/).to_stderr
     end
 
     it "warns when server API version is older than client" do

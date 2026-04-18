@@ -43,14 +43,34 @@ module OpenTrace
       # Guard 2: skip if this IS an OpenTrace dispatch call (prevent infinite recursion)
       return super if Fiber[:opentrace_http_tracking_disabled]
 
-      # Inject trace context into outgoing request headers
-      inject_trace_context(req) if OpenTrace.config.trace_propagation
+      # Trace context injection is bookkeeping — must never raise to the host.
+      begin
+        inject_trace_context(req) if OpenTrace.config.trace_propagation
+      rescue StandardError
+      end
 
-      collector = Fiber[:opentrace_collector]
       start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-      response = super
+      begin
+        response = super
+      rescue IOError, SystemCallError, OpenSSL::SSL::SSLError, Timeout::Error, Net::ProtocolError => e
+        # Real network error from the host's HTTP call. Record it, then re-raise
+        # so the host app sees the error it's expecting to handle.
+        record_http_failure(req, e, start_time) rescue nil
+        raise
+      end
 
+      # Bookkeeping for a successful response. Any bug here (NoMethodError on
+      # a streaming body, a payload builder regression, etc.) must NOT bubble
+      # into host code — swallow and move on.
+      record_http_success(req, response, start_time) rescue nil
+
+      response
+    end
+
+    private
+
+    def record_http_success(req, response, start_time)
       duration_ms = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time) * 1000
       host = address
       port_str = (port == 443 || port == 80) ? "" : ":#{port}"
@@ -58,18 +78,11 @@ module OpenTrace
       safe_path = req.path.to_s.split("?").first
       url = "#{scheme}://#{host}#{port_str}#{safe_path}"
 
-      # Capture request body (if present and under size limit)
-      req_body = nil
-      if req.body && req.body.is_a?(String) && req.body.bytesize < MAX_BODY_CAPTURE_BYTES
-        req_body = req.body
-      end
+      req_body = capturable_body(req.body)
+      resp_body = capturable_body(response.body)
+      resp_size = body_size(response)
 
-      # Capture response body (if under size limit)
-      resp_body = nil
-      if response.body && response.body.is_a?(String) && response.body.bytesize < MAX_BODY_CAPTURE_BYTES
-        resp_body = response.body
-      end
-
+      collector = Fiber[:opentrace_collector]
       if collector
         collector.record_http(
           method: req.method,
@@ -90,22 +103,23 @@ module OpenTrace
           vendor: vendor,
           status: response.code.to_i,
           duration_ms: duration_ms,
-          request_headers: nil,  # skip headers for now to save memory
+          request_headers: nil,
           request_body: req_body,
           response_headers: nil,
           response_body: resp_body,
-          response_size: response.body&.bytesize,
+          response_size: resp_size,
           retry_attempt: 0,
           error_class: nil
         )
         buffer.record_timeline(type: :http, name: "#{req.method} #{host}", duration_ms: duration_ms)
       end
+    end
 
-      response
-    rescue IOError, SystemCallError, OpenSSL::SSL::SSLError, Timeout::Error, Net::ProtocolError => e
-      # Record the failed HTTP call, then re-raise
+    def record_http_failure(req, error, start_time)
       duration_ms = start_time ? (Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time) * 1000 : 0
+      req_body = req ? capturable_body(req.body) : nil
 
+      collector = Fiber[:opentrace_collector]
       if collector
         collector.record_http(
           method: req&.method,
@@ -113,7 +127,7 @@ module OpenTrace
           host: address,
           status: 0,
           duration_ms: duration_ms,
-          error: e.class.name
+          error: error.class.name
         )
       end
 
@@ -130,14 +144,25 @@ module OpenTrace
           request_body: req_body,
           response_body: nil,
           response_size: nil,
-          error_class: e.class.name
+          error_class: error.class.name
         )
       end
-
-      raise # ALWAYS re-raise — never swallow app errors
     end
 
-    private
+    def capturable_body(body)
+      return nil unless body.is_a?(String)
+      return nil if body.bytesize >= MAX_BODY_CAPTURE_BYTES
+      body
+    end
+
+    # Response body size when it can be determined without re-reading the stream.
+    # Streaming responses (Net::ReadAdapter) can't be re-read, so we fall back
+    # to Content-Length when present, otherwise nil.
+    def body_size(response)
+      return response.body.bytesize if response.body.is_a?(String)
+      len = response["Content-Length"]
+      len ? len.to_i : nil
+    end
 
     def inject_trace_context(req)
       trace_id = Fiber[:opentrace_trace_id]

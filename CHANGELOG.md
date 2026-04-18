@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.1] - 2026-04-18
+
+### Fixed
+
+- **HTTP tracker crash on streaming responses**: `HttpTracker#request` called `response.body.bytesize` without guarding against non-String bodies. When `Net::HTTP#request` is invoked with a block (streaming, as used by RubyLLM and similar clients), `response.body` is a `Net::ReadAdapter`, which has no `#bytesize` — raising `NoMethodError` that bubbled into host application code. Affected any app with `http_tracking: true` that made streaming HTTP calls; workaround was to set `http_tracking = false`.
+- **HTTP tracker bookkeeping errors no longer leak to the host**: the tracker previously rescued only network-level errors (`IOError`, `SystemCallError`, `OpenSSL::SSL::SSLError`, `Timeout::Error`, `Net::ProtocolError`) and re-raised them. Any other error raised by OpenTrace's own bookkeeping (a future `NoMethodError`, a payload-builder regression, etc.) would propagate into host code. `HttpTracker#request` now isolates bookkeeping (both success and failure paths) behind `rescue StandardError`, so only real network errors reach the host. Real network errors still propagate and are still recorded.
+- **Streaming response size**: when the response body can't be measured after the fact (streaming / `Net::ReadAdapter`), `response_size` falls back to the `Content-Length` header when present, otherwise `nil`.
+
+### Internal
+
+- Updated `spec/opentrace_spec.rb` to the flat payload schema introduced in 0.17.0 (18 tests were still written against the pre-flat nested `event` shape). Extended the `parse_log_body` helper and added a `parse_log_entries` companion for multi-entry batch assertions.
+
 ## [0.17.0] - 2026-04-18
 
 ### Added

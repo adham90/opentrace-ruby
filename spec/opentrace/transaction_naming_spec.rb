@@ -62,7 +62,8 @@ RSpec.describe "Custom transaction naming" do
       payload = OpenTrace::PayloadBuilder.materialize(entry, config)
 
       expect(payload[:message]).to start_with("checkout.create 200")
-      expect(payload[:metadata][:transaction_name]).to eq("checkout.create")
+      # Flat format: transaction_name lives in body.context
+      expect(payload.dig(:body, :context, :transaction_name)).to eq("checkout.create")
     end
 
     it "uses default method/path message when no transaction name" do
@@ -79,7 +80,11 @@ RSpec.describe "Custom transaction naming" do
       payload = OpenTrace::PayloadBuilder.materialize(entry, config)
 
       expect(payload[:message]).to start_with("POST /orders 200")
-      expect(payload[:metadata]).not_to have_key(:transaction_name)
+      # Flat format: body.context should not contain transaction_name
+      context = payload.dig(:body, :context)
+      if context
+        expect(context).not_to have_key(:transaction_name)
+      end
     end
   end
 

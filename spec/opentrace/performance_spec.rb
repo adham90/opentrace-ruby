@@ -114,7 +114,7 @@ RSpec.describe "Performance" do
           .with { |req|
             body = JSON.parse(decompress_body(req.body))
             body = [body] unless body.is_a?(Array)
-            body.any? { |entry| entry.dig("event", "message") == "first call" }
+            body.any? { |entry| entry["message"] == "first call" }
           }
       ).to have_been_made
 
@@ -123,7 +123,7 @@ RSpec.describe "Performance" do
           .with { |req|
             body = JSON.parse(decompress_body(req.body))
             body = [body] unless body.is_a?(Array)
-            body.any? { |entry| entry.dig("event", "message") == "second call" }
+            body.any? { |entry| entry["message"] == "second call" }
           }
       ).to have_been_made
     end

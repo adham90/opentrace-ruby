@@ -81,7 +81,7 @@ end
 # Handles compressed/uncompressed, JSON/MessagePack bodies.
 # Normalizes the new event-based document format so tests that check
 # body["level"], body["message"], body["metadata"] continue to work.
-def parse_log_body(req)
+def parse_log_entries(req)
   raw = decompress_body(req.body)
   body = begin
     JSON.parse(raw)
@@ -89,24 +89,51 @@ def parse_log_body(req)
     require "msgpack"
     MessagePack.unpack(raw)
   end
-  entry = body.is_a?(Array) ? body.first : body
+  entries = body.is_a?(Array) ? body : [body]
+  entries.map { |e| normalize_log_entry(e) }
+end
 
-  # Normalize event-based format: promote nested fields to top level for test compatibility
-  if entry.is_a?(Hash)
-    if entry.key?("event") && !entry.key?("message")
-      event = entry["event"]
-      if event.is_a?(Hash)
-        entry["message"]  = event["message"]  if event.key?("message")
-        entry["metadata"] = event["metadata"] if event.key?("metadata")
-        entry["event_type"] = event["type"] if event.key?("type")
-      end
+def parse_log_body(req)
+  parse_log_entries(req).first
+end
+
+def normalize_log_entry(entry)
+  return entry unless entry.is_a?(Hash)
+
+  # Legacy event-based format (pre-flat)
+  if entry.key?("event") && !entry.key?("message")
+    event = entry["event"]
+    if event.is_a?(Hash)
+      entry["message"]  = event["message"]  if event.key?("message")
+      entry["metadata"] = event["metadata"] if event.key?("metadata")
+      entry["event_type"] = event["type"] if event.key?("type")
     end
-    if entry.key?("context")
-      ctx = entry["context"]
-      if ctx.is_a?(Hash)
-        %w[trace_id span_id parent_span_id request_id hostname pid].each do |k|
-          entry[k] = ctx[k] if ctx.key?(k)
-        end
+  end
+
+  # Flat SDK format: level is lowercase, normalize to uppercase for test compat
+  if entry.key?("level") && entry["level"] == entry["level"].downcase
+    entry["level"] = entry["level"].upcase
+  end
+
+  # Flat SDK: metadata + context both live in body.context (static + config + user merged).
+  # Alias both names so tests written against either semantic keep working.
+  if entry.key?("body") && entry["body"].is_a?(Hash) && entry["body"].key?("context")
+    entry["metadata"] ||= entry["body"]["context"]
+    entry["context"]  ||= entry["body"]["context"]
+  end
+
+  # Flat SDK: environment is "env", timestamp is "ts"
+  entry["environment"] = entry["env"] if entry.key?("env") && !entry.key?("environment")
+  entry["timestamp"]   = entry["ts"]  if entry.key?("ts")  && !entry.key?("timestamp")
+
+  if entry.key?("context")
+    ctx = entry["context"]
+    if ctx.is_a?(Hash)
+      # Promote well-known context fields to top level, but don't clobber an
+      # existing top-level value — the flat schema emits the real trace_id at
+      # the top, while body.context can contain a user-metadata trace_id.
+      %w[trace_id span_id parent_span_id request_id hostname pid].each do |k|
+        entry[k] ||= ctx[k] if ctx.key?(k)
       end
     end
   end

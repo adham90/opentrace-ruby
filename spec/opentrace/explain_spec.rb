@@ -39,7 +39,8 @@ RSpec.describe "EXPLAIN Plan Capture" do
       # Without ActiveRecord defined, explain should be skipped
       payload = OpenTrace::PayloadBuilder.materialize(entry, OpenTrace.config)
       expect(payload).to be_a(Hash)
-      expect(payload[:metadata]).not_to have_key(:explain_plans)
+      # Flat format: explain plans would appear in body.queries, not metadata
+      expect(payload.dig(:body, :queries)).to be_nil
     end
 
     it "materializes request without pending_explains" do

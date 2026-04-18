@@ -130,7 +130,7 @@ module OpenTrace
     end
 
     def dispatch_loop
-      @uri = URI.join(@config.endpoint.chomp("/") + "/", "api/v2/logs")
+      @uri = URI.join(@config.endpoint.chomp("/") + "/", "api/logs")
       check_server_compatibility
 
       loop do

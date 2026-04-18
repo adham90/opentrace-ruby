@@ -288,6 +288,66 @@ module OpenTrace
       @client&.shutdown(timeout: timeout)
     end
 
+    # Enqueue a raw request buffer document (from InstrumentationContext).
+    # Converts the nested buffer doc to flat format before enqueueing.
+    def client_enqueue_raw(doc)
+      return unless enabled?
+
+      req = doc[:request] || {}
+      resp = doc[:response] || {}
+      duration_ms = if doc[:started_at]
+                      ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - doc[:started_at]) * 1000).round(0)
+                    end
+
+      status = resp[:status] || resp[:response_status]
+      level = if status.to_i >= 500 then "error"
+             elsif status.to_i >= 400 then "warn"
+             else "info"
+             end
+
+      message = "#{req[:method]} #{req[:path]} #{status} #{duration_ms}ms"
+
+      payload = {
+        ts: Time.now.utc.strftime("%Y-%m-%dT%H:%M:%S.%6NZ"),
+        level: level,
+        service: config.service,
+        env: config.environment,
+        message: message,
+        event_type: "http.request",
+        method: req[:method],
+        path: req[:path],
+        status: status.to_i,
+        duration_ms: duration_ms.to_i,
+        controller: doc[:controller],
+      }
+
+      payload[:trace_id] = doc[:trace_id] if doc[:trace_id]
+      payload[:span_id] = doc[:span_id] if doc[:span_id]
+      payload[:parent_span_id] = doc[:parent_span_id] if doc[:parent_span_id]
+      payload[:request_id] = doc[:request_id] if doc[:request_id]
+
+      # Pack everything else into body
+      body = {}
+      body[:request_headers] = req[:headers] if req[:headers]
+      body[:request_params] = req[:params] if req[:params]
+      body[:request_body] = req[:body] if req[:body]
+      body[:response_headers] = resp[:headers] if resp[:headers]
+      body[:response_body] = resp[:body] if resp[:body]
+      body[:sql] = doc[:sql] if doc[:sql] && !doc[:sql].empty?
+      body[:http] = doc[:http] if doc[:http] && !doc[:http].empty?
+      body[:email] = doc[:email] if doc[:email] && !doc[:email].empty?
+      body[:audit] = doc[:audit] if doc[:audit] && !doc[:audit].empty?
+      body[:logs] = doc[:logs] if doc[:logs] && !doc[:logs].empty?
+      body[:timeline] = doc[:timeline] if doc[:timeline] && !doc[:timeline].empty?
+      body[:performance] = doc[:performance] if doc[:performance]
+      body[:context] = doc[:context] if doc[:context]
+
+      payload[:body] = body unless body.empty?
+      client.enqueue(payload)
+    rescue StandardError
+      # Never raise to the host app
+    end
+
     def reset!
       shutdown(timeout: 1)
       @config = nil
@@ -372,41 +432,34 @@ module OpenTrace
     end
 
     # Build a standalone document for log/error/event calls outside a request.
-    # Includes Fiber-local trace context when available.
+    # Uses the flat SDK format: top-level indexed fields, body for metadata.
     def build_standalone_doc(level, message, metadata, event_type: "log")
       ctx = resolve_context_raw
-      context = {
+      body_context = {
         hostname: static_context[:hostname],
         pid: static_context[:pid]
       }.merge(ctx.is_a?(Hash) ? ctx : {})
+      body_context.merge!(metadata) if metadata.is_a?(Hash)
 
-      # Include Fiber-local trace context
-      trace_id = Fiber[:opentrace_trace_id]
-      span_id = Fiber[:opentrace_span_id]
-      parent_span_id = Fiber[:opentrace_parent_span_id]
-      request_id = Fiber[:opentrace_request_id]
-
-      context[:trace_id] = trace_id if trace_id
-      context[:span_id] = span_id if span_id
-      context[:parent_span_id] = parent_span_id if parent_span_id
-      context[:request_id] = request_id if request_id
-
-      {
-        id: ULID.generate,
-        timestamp: Time.now.utc.strftime("%Y-%m-%dT%H:%M:%S.%6NZ"),
-        level: level.to_s.upcase,
+      payload = {
+        ts: Time.now.utc.strftime("%Y-%m-%dT%H:%M:%S.%6NZ"),
+        level: level.to_s.downcase,
         service: config.service,
-        environment: config.environment,
-        version: static_context[:git_sha],
-        context: context,
-        event: {
-          type: event_type,
-          message: message,
-          metadata: metadata
-        }
+        env: config.environment,
+        message: message,
+        event_type: event_type
       }
+
+      payload[:version] = static_context[:git_sha] if static_context[:git_sha]
+      payload[:trace_id] = Fiber[:opentrace_trace_id] if Fiber[:opentrace_trace_id]
+      payload[:span_id] = Fiber[:opentrace_span_id] if Fiber[:opentrace_span_id]
+      payload[:parent_span_id] = Fiber[:opentrace_parent_span_id] if Fiber[:opentrace_parent_span_id]
+      payload[:request_id] = Fiber[:opentrace_request_id] if Fiber[:opentrace_request_id]
+
+      payload[:body] = { context: body_context.compact } unless body_context.empty?
+      payload
     rescue StandardError
-      { level: level.to_s.upcase, event: { type: event_type, message: message, metadata: metadata } }
+      { ts: Time.now.utc.strftime("%Y-%m-%dT%H:%M:%S.%6NZ"), level: level.to_s.downcase, message: message }
     end
 
     # Resolve user-configured context. Returns the raw value

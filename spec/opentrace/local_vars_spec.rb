@@ -114,8 +114,8 @@ RSpec.describe "OpenTrace.capture_binding" do
 
     expect(enqueued.size).to eq(1)
     doc = enqueued[0]
-    metadata = doc[:event][:metadata]
-    expect(metadata[:local_variables]).to be_an(Array)
+    ctx = doc[:body][:context]
+    expect(ctx[:local_variables]).to be_an(Array)
   end
 
   it "does not raise if capture_binding fails" do

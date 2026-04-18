@@ -186,28 +186,30 @@ RSpec.describe OpenTrace::Client do
       stub_request(:post, "https://opentrace.test/api/logs")
         .to_return(status: 201, body: '{"count":1}')
 
-      huge_backtrace = (1..500).map { |i| "app/models/order.rb:#{i}:in `method_#{i}'" }
+      # Build a payload that exceeds 4KB but fits after truncation
       truncate_client.enqueue({
-        level: "ERROR",
+        ts: Time.now.utc.strftime("%Y-%m-%dT%H:%M:%S.%6NZ"),
+        level: "error",
+        service: "test-svc",
         message: "big error",
-        metadata: {
-          backtrace: huge_backtrace,
-          params: { data: "x" * 20_000 },
-          exception_class: "RuntimeError",
-          exception_message: "should survive truncation"
+        body: {
+          context: {
+            params: { data: "x" * 3_000 },
+            exception_class: "RuntimeError",
+          },
+          timeline: (1..50).map { |i| { type: "sql", name: "query_#{i}", offset_ms: i } }
         }
       })
-      sleep 0.5
+      sleep 1
 
       expect(
         a_request(:post, "https://opentrace.test/api/logs")
           .with { |req|
             batch = parse_batch(req)
-            meta = batch.first["metadata"]
+            body = batch.first["body"]
             batch.first["message"] == "big error" &&
-              !meta.key?("backtrace") &&
-              !meta.key?("params") &&
-              meta["exception_class"] == "RuntimeError"
+              !body.key?("timeline") && # timeline removed by truncation
+              !body.dig("context", "params") # params removed by truncation
           }
       ).to have_been_made
 

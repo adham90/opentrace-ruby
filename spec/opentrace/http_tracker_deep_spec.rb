@@ -180,6 +180,58 @@ RSpec.describe OpenTrace::HttpTracker, "deep capture" do
       Fiber[:opentrace_collector] = nil
     end
 
+    it "never raises to the host app when bookkeeping itself explodes" do
+      # The tracker's core contract: a bug in OpenTrace's own bookkeeping code
+      # must never crash the host app's HTTP call. Prove it by making the
+      # RequestBuffer#record_http method raise — the outer Net::HTTP call
+      # must still return the real response unchanged.
+      buffer = OpenTrace::RequestBuffer.new
+      buffer.id = "test-boom"
+      buffer.started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      def buffer.record_http(**); raise "boom from bookkeeping"; end
+      Fiber[:opentrace_buffer] = buffer
+
+      uri = URI("https://example.com/api/data")
+      response = nil
+      expect { response = Net::HTTP.get_response(uri) }.not_to raise_error
+      expect(response.code).to eq("200")
+    ensure
+      Fiber[:opentrace_buffer] = nil
+      Fiber[:opentrace_collector] = nil
+    end
+
+    it "handles streaming responses where body is a Net::ReadAdapter" do
+      # When Net::HTTP#request is called with a block (streaming), response.body
+      # becomes a Net::ReadAdapter instead of a String — it has no #bytesize.
+      # Regression test for a crash on RubyLLM streaming / any block-form request.
+      stub_request(:get, "https://example.com/api/stream")
+        .to_return(status: 200, body: "chunk-data")
+
+      buffer = OpenTrace::RequestBuffer.new
+      buffer.id = "test-stream"
+      buffer.started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      Fiber[:opentrace_buffer] = buffer
+
+      uri = URI("https://example.com/api/stream")
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = true
+      request = Net::HTTP::Get.new(uri.path)
+
+      expect {
+        http.request(request) do |response|
+          # Force body into the Net::ReadAdapter state (what streaming does)
+          response.instance_variable_set(:@body, Net::ReadAdapter.new(->(_) {}))
+        end
+      }.not_to raise_error
+
+      capture = buffer.http_captures.first
+      expect(capture[:response_size]).to be_nil
+      expect(capture[:response_body]).to be_nil
+    ensure
+      Fiber[:opentrace_buffer] = nil
+      Fiber[:opentrace_collector] = nil
+    end
+
     it "does not capture response body when over 64KB" do
       large_body = "x" * 70_000  # > 64KB
       stub_request(:get, "https://example.com/api/large")

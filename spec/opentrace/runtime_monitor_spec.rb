@@ -52,18 +52,18 @@ RSpec.describe OpenTrace::RuntimeMonitor do
       sleep 0.3
       monitor.stop
 
-      # Should have enqueued at least one event
-      events = enqueued.select { |e| e.is_a?(Hash) && e.dig(:event, :type) == "runtime.metrics" }
+      # Should have enqueued at least one event (flat SDK format)
+      events = enqueued.select { |e| e.is_a?(Hash) && e[:event_type] == "runtime.metrics" }
       expect(events).not_to be_empty
 
-      metadata = events.first.dig(:event, :metadata)
-      expect(metadata).to have_key(:gc_count)
-      expect(metadata).to have_key(:gc_major_count)
-      expect(metadata).to have_key(:gc_minor_count)
-      expect(metadata).to have_key(:gc_heap_live_slots)
-      expect(metadata).to have_key(:thread_count)
-      expect(metadata).to have_key(:process_pid)
-      expect(metadata[:process_pid]).to eq(Process.pid)
+      context = events.first.dig(:body, :context)
+      expect(context).to have_key(:gc_count)
+      expect(context).to have_key(:gc_major_count)
+      expect(context).to have_key(:gc_minor_count)
+      expect(context).to have_key(:gc_heap_live_slots)
+      expect(context).to have_key(:thread_count)
+      expect(context).to have_key(:process_pid)
+      expect(context[:process_pid]).to eq(Process.pid)
     end
   end
 

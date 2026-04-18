@@ -129,9 +129,9 @@ RSpec.describe OpenTrace::SourceContext do
       OpenTrace.error(e)
 
       expect(enqueued.size).to eq(1)
-      meta = enqueued[0][:event][:metadata]
-      expect(meta[:source_context]).to be_a(Hash)
-      expect(meta[:source_context][:file]).to eq(lib_file)
+      ctx = enqueued[0][:body][:context]
+      expect(ctx[:source_context]).to be_a(Hash)
+      expect(ctx[:source_context][:file]).to eq(lib_file)
     end
 
     it "does not attach source context when disabled" do
@@ -147,8 +147,8 @@ RSpec.describe OpenTrace::SourceContext do
       OpenTrace.error(e)
 
       expect(enqueued.size).to eq(1)
-      meta = enqueued[0][:event][:metadata]
-      expect(meta).not_to have_key(:source_context)
+      ctx = enqueued[0][:body][:context]
+      expect(ctx).not_to have_key(:source_context)
     end
   end
 end
