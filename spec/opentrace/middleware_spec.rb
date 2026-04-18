@@ -368,19 +368,30 @@ RSpec.describe OpenTrace::Middleware do
         expect(doc[:response][:status]).to eq(200)
       end
 
-      it "captures response body for non-streaming responses" do
+      it "reads response size from Content-Length without materialising the body" do
         enqueued = []
         allow(OpenTrace).to receive(:client_enqueue_raw) { |doc| enqueued << doc }
 
+        body = Object.new.tap do |b|
+          b.define_singleton_method(:each) { |&block| block.call("Hello World") }
+          b.define_singleton_method(:to_ary) { raise "to_ary must not be called by middleware" }
+        end
+
         app = described_class.new(->(env) {
-          [200, { "Content-Type" => "text/plain" }, ["Hello", " ", "World"]]
+          [200, { "Content-Type" => "text/plain", "Content-Length" => "11" }, body]
         })
 
-        app.call("REQUEST_METHOD" => "GET", "PATH_INFO" => "/hello")
+        status, _headers, returned_body = app.call("REQUEST_METHOD" => "GET", "PATH_INFO" => "/hello")
 
+        expect(status).to eq(200)
         doc = enqueued.last
         expect(doc).not_to be_nil
-        expect(doc[:response][:size]).to eq("Hello World".bytesize)
+        expect(doc[:response][:size]).to eq(11)
+
+        # Caller (the web server) may still iterate the body normally.
+        chunks = []
+        returned_body.each { |c| chunks << c }
+        expect(chunks).to eq(["Hello World"])
       end
 
       it "skips body capture for streaming (chunked) responses" do

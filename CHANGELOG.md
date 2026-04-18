@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.2] - 2026-04-19
+
+### Fixed
+
+- **Duplicate ActiveJob dispatch on Falcon**: `Middleware#capture_response` called `body.to_ary` on the Rack response body to measure its size. Per the Rack spec a response body is to be iterated exactly once — by the web server, via `each`. Materialising it inside a middleware is a spec violation, and with Falcon + `async-job-adapter-active_job` it caused the downstream app to effectively re-execute: a single `POST /chats/:id/ask` produced multiple `ChatJob.perform_later` dispatches, multiple `add_assistant_message` rows, and `PG::UniqueViolation` on `good_jobs_pkey` when `GenerateChatTitleJob` was re-enqueued with the same `active_job_id`. `capture_response` no longer touches the body; size is read from the `Content-Length` header instead (authoritative for non-streaming responses, safely `nil` for streaming).
+
+### Upgrading from 0.17.1
+
+- No configuration changes required. `response_body` is no longer populated on the captured document. Everything else (status, headers, Content-Length-derived size, request body, request headers) is unchanged.
+
 ## [0.17.1] - 2026-04-18
 
 ### Fixed

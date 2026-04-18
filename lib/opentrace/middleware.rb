@@ -172,28 +172,25 @@ module OpenTrace
       # Never affect the host app
     end
 
-    # Capture response status, headers, and body into the buffer.
-    # For non-streaming responses, the body content is saved.
-    # For streaming responses, only Content-Length is tracked.
+    # Capture response status, headers, and size into the buffer.
+    #
+    # We intentionally do NOT call `body.to_ary` or `body.each` here. Per
+    # the Rack spec, a response body must be iterated exactly once — by the
+    # web server. Materialising it inside a middleware is a spec violation
+    # and can have surprising side-effects for wrappers that execute their
+    # source callable on iteration (observed in the wild with Falcon +
+    # async-job: calling `to_ary` here caused the downstream app to
+    # effectively run twice, duplicating ActiveJob enqueues).
+    #
+    # Size is read from the Content-Length header instead, which is the
+    # authoritative value for non-streaming responses and safely nil for
+    # streaming responses.
     def capture_response(buffer, status, headers, body)
       buffer.response_status  = status
       buffer.response_headers = headers
 
-      streaming = headers && (
-        headers["Transfer-Encoding"] == "chunked" ||
-        (headers.respond_to?(:key?) && !body.respond_to?(:to_ary))
-      )
-
-      if streaming
-        # Streaming: only track size from Content-Length header
-        buffer.response_size = headers["Content-Length"]&.to_i
-      else
-        # Non-streaming: collect body parts
-        parts = body.respond_to?(:to_ary) ? body.to_ary : []
-        collected = parts.join
-        buffer.response_body = collected unless collected.empty?
-        buffer.response_size = collected.bytesize
-      end
+      cl = headers && (headers["Content-Length"] || headers["content-length"])
+      buffer.response_size = cl.to_i if cl
     rescue StandardError
       # Never affect the host app
     end
