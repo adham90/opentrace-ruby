@@ -31,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Removed the legacy dispatch/queue stack; the new pipeline is wired end-to-end.
 
+### Upgrading from 0.16.0
+
+- **Upgrade the OpenTrace server in lockstep.** The wire format changed (flat payload schema, JSON+gzip transport, `handler` replacing `controller`/`action`). Older servers will reject v0.17.0 payloads, so ship the matching server release before — or together with — the gem bump.
+- **Drop `c.environment = Rails.env` from your initializer** (optional). `config.environment` now auto-detects from `OPENTRACE_ENV` → `Rails.env` → `RACK_ENV` → `RAILS_ENV`.
+- **`OpenTrace.log(..., request_summary:)` kwarg was removed.** Only affects callers that passed `request_summary:` explicitly — unlikely outside the gem itself.
+- **`error_fingerprint` is now computed server-side** and stripped from outgoing payloads. If you depended on the client-side value (e.g. in a `before_send` proc), read it from the server instead.
+- All other v0.16.0 config options (`before_send`, `sampler`, `ignore_paths`, `pii_scrubbing`, etc.) still work unchanged. New features (`audit_tracking`, `capture_depth`, `transport: :unix_socket`, `capture_rules`) default to off/safe — opt in when you want them.
+
 ## [0.16.0] - 2026-02-16
 
 ### Added
