@@ -5,11 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.17.0] - 2026-04-18
+
+### Added
+
+- **Deep capture system** (Phases 1–3): new SDK core for capturing SQL, HTTP, email, audit, and file-operation data per request. Includes per-domain capture overrides (`sql_capture`, `http_capture`, `email_capture`, `audit_capture`, `request_capture`), configurable depth (`capture_depth`), and a `capture_rules` DSL.
+- **Parallel dispatch pipeline** (Phase 7): multi-worker dispatch with back-pressure, rate-limit handling, and circuit-breaker integration for sustained high-throughput workloads.
+- **Audit trail** (`audit_tracking: true`): captures ActiveRecord create/update/destroy events with configurable `audit_exclude_models`, `audit_exclude_fields`, and `audit_actor` callbacks. Detects bulk operations so a single `update_all` doesn't explode into thousands of audit rows.
+- **Performance benchmarks** for the deep capture system, locked in as regression guards.
+- **Unix socket transport** (`transport: :unix_socket`, `socket_path: "/tmp/opentrace.sock"`): bypasses HTTP overhead when the SDK and server are on the same host.
+- **Ruby ↔ Go server e2e integration tests** covering the full ingest path.
 
 ### Changed
 
-- **Auto-detect environment**: `config.environment` now resolves automatically from `OPENTRACE_ENV` → `Rails.env` → `RACK_ENV` → `RAILS_ENV` when not set explicitly. Rails apps no longer need `c.environment = Rails.env` in their initializer — the auto-detection handles it. The server pairs this with per-env scoped MCP tokens, so the env string becomes the key to which traffic a given token can see.
+- **Auto-detect environment**: `config.environment` now resolves automatically from `OPENTRACE_ENV` → `Rails.env` → `RACK_ENV` → `RAILS_ENV` when not set explicitly. Rails apps can drop `c.environment = Rails.env` from their initializer — the auto-detection handles it. The server pairs this with per-env scoped MCP tokens, so the env string becomes the key to which traffic a given token can see.
+- **Flat payload schema**: payload shape switched to the segmented log store's flat schema — top-level fields replace the nested structure.
+- **JSON + gzip transport**: replaces the older msgpack/binary encoding for compatibility with any HTTP endpoint.
+- **Schema update**: `handler` replaces `controller` + `action`, and `error_class` is now a first-class top-level field.
+
+### Fixed
+
+- Flaky e2e tests and benchmark stability.
+
+### Internal
+
+- Removed the legacy dispatch/queue stack; the new pipeline is wired end-to-end.
 
 ## [0.16.0] - 2026-02-16
 
