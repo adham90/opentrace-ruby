@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.4] - 2026-04-19
+
+### Fixed
+
+- **ActiveJob duplicate dispatch under `BroadcastLogger` + `log_forwarding`**: `OpenTrace::LogForwarder#tagged` used to `yield self`, so the block passed to `Rails.logger.tagged(...) { ... }` fired once per broadcast sink. Rails' `ActiveSupport::BroadcastLogger` routes `tagged` through `method_missing` (it's not in `LOGGER_METHODS`), and `method_missing` iterates every sink without the block-cache guard that `dispatch` uses for `info`/`debug`/`warn` — so every sink that responds to `:tagged` yields the block. ActiveJob wraps both `around_enqueue` and `around_perform` in `logger.tagged(...) { block }`; with a two-sink broadcast (real `TaggedLogging` + `LogForwarder`) the net effect was **2× enqueues × 2× performs = 4 job runs per single `perform_later` call**. In the reporting app this manifested as 4 assistant-message bubbles per single chat POST, plus `PG::UniqueViolation` on `good_jobs_pkey` when the downstream `perform_later` collided with itself. Remove the `#tagged` override from `LogForwarder`; `BroadcastLogger#method_missing` then filters the forwarder out of the sinks list for `:tagged` and only the real `TaggedLogging` sink runs the block, exactly once.
+- **`AuditTracker` re-install idempotency**: `OpenTrace::AuditTracker.included(base)` now guards with an instance variable so re-including on the same base class doesn't stack duplicate `after_create`/`after_update`/`after_destroy` callbacks. (Normally only relevant in boot-time races or spec-level re-configuration, but good hygiene.)
+
+### Internal
+
+- Regression coverage: `spec/opentrace/log_forwarder_spec.rb` now asserts (a) `LogForwarder` does NOT respond to `:tagged` and (b) a realistic `BroadcastLogger` with `LogForwarder` + a tagged sink yields the block exactly once.
+- Added `spec/opentrace/audit_tracker_spec.rb` covering the idempotent install path.
+
 ## [0.17.3] - 2026-04-19
 
 ### Fixed

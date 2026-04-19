@@ -60,9 +60,28 @@ module OpenTrace
       ""
     end
 
-    def tagged(*tags)
-      yield self
-    end
+    # DO NOT implement `tagged` here.
+    #
+    # Rails' ActiveSupport::BroadcastLogger routes `tagged` through
+    # `method_missing` (it's not in LOGGER_METHODS), which calls
+    # `logger.send(:tagged, *tags, &block)` on EVERY sink that responds to
+    # `:tagged` — without the block-cache guard that `dispatch` uses for
+    # info/debug/warn/etc. So if LogForwarder implements `tagged(*tags) { yield self }`,
+    # the block passed to the BroadcastLogger's tagged call runs ONCE PER
+    # SINK. For ActiveJob — which wraps both `around_enqueue` and
+    # `around_perform` in `logger.tagged(...) { ... }` — that means:
+    #   * enqueue flow runs twice  → adapter.enqueue fires twice
+    #   * each dispatched perform runs twice
+    #   * net effect: 4 performs (and 4 add_assistant_message rows) per
+    #     single perform_later call on a BroadcastLogger with 2 sinks.
+    #
+    # By simply NOT responding to `:tagged`, BroadcastLogger's
+    # method_missing does `@broadcasts.select { |l| l.respond_to?(name) }`
+    # and filters us out — only the real TaggedLogging sink receives the
+    # call, its block yields exactly once, and dispatch is single.
+    # `push_tags` / `pop_tags` / `clear_tags!` DO stay defined as no-ops
+    # because they never take blocks, so calling them on every sink is
+    # harmless.
 
     def flush; end
 

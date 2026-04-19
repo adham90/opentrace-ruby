@@ -180,8 +180,16 @@ RSpec.describe OpenTrace::LogForwarder do
       expect(forwarder).to respond_to(:current_tags)
     end
 
-    it "responds to tagged" do
-      expect(forwarder).to respond_to(:tagged)
+    it "does NOT respond to :tagged (regression guard — see log_forwarder.rb)" do
+      # If LogForwarder responds to :tagged, Rails' BroadcastLogger#method_missing
+      # routes logger.tagged(...) { block } through every sink and each sink's
+      # tagged yields the block — so the block runs once per sink. For
+      # ActiveJob's around_enqueue / around_perform (both wrapped in
+      # logger.tagged), that means perform_later and perform_now fire N times
+      # where N is the number of sinks. Not responding to :tagged makes
+      # method_missing filter us out and only the real TaggedLogging sink runs
+      # the block exactly once.
+      expect(forwarder).not_to respond_to(:tagged)
     end
 
     it "push_tags does not raise" do
@@ -196,10 +204,28 @@ RSpec.describe OpenTrace::LogForwarder do
       expect(forwarder.current_tags).to eq([])
     end
 
-    it "tagged yields the forwarder" do
-      yielded = nil
-      forwarder.tagged("env:test") { |logger| yielded = logger }
-      expect(yielded).to eq(forwarder)
+    it "routes under BroadcastLogger without duplicating the block" do
+      # Reproduces the Rails 7.1+ BroadcastLogger shape. BroadcastLogger's
+      # `tagged` is not in LOGGER_METHODS, so it goes through method_missing,
+      # which iterates every sink that responds to :tagged and calls each
+      # one with the same block — there is NO block-cache guard here (unlike
+      # `dispatch`). If LogForwarder also responds to :tagged, the block
+      # fires twice.
+      require "active_support"
+      require "active_support/logger_silence"
+      require "active_support/broadcast_logger"
+
+      tagged_sink = Class.new(::Logger) do
+        def tagged(*_tags)
+          yield self
+        end
+      end.new(IO::NULL)
+
+      broadcast = ActiveSupport::BroadcastLogger.new(tagged_sink, forwarder)
+
+      invocations = 0
+      broadcast.tagged("req:abc") { invocations += 1 }
+      expect(invocations).to eq(1)
     end
 
     it "clear_tags! does not raise" do

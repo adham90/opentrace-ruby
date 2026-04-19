@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require "active_support/callbacks"
 require "opentrace/audit_tracker"
 require "opentrace/request_buffer"
 
@@ -331,6 +332,105 @@ RSpec.describe OpenTrace::AuditTracker do
 
       expect(small_buffer.audit_captures.size).to eq(3)
       expect(small_buffer.audit_truncated?).to be true
+    end
+  end
+
+  describe "callback integration" do
+    def build_callback_model_class
+      Class.new do
+        include ActiveSupport::Callbacks
+
+        define_callbacks :create, :update, :destroy
+
+        class << self
+          attr_accessor :job_dispatches
+
+          def after_create(&block)
+            set_callback(:create, :after, &block)
+          end
+
+          def after_update(&block)
+            set_callback(:update, :after, &block)
+          end
+
+          def after_destroy(&block)
+            set_callback(:destroy, :after, &block)
+          end
+        end
+
+        attr_reader :id, :attributes, :saved_changes
+
+        def initialize
+          @id = 123
+          @attributes = { "id" => 123, "title" => "hello" }
+          @saved_changes = { "title" => ["old", "hello"] }
+        end
+
+        def create!
+          run_callbacks(:create) {}
+        end
+
+        def update!
+          run_callbacks(:update) {}
+        end
+
+        def destroy!
+          run_callbacks(:destroy) {}
+        end
+      end
+    end
+
+    it "does not duplicate host after_create callbacks when audit tracking is included" do
+      model_class = build_callback_model_class
+      model_class.job_dispatches = 0
+      model_class.after_create do |_record|
+        model_class.job_dispatches += 1
+      end
+      model_class.include(described_class)
+
+      model_class.new.create!
+
+      expect(model_class.job_dispatches).to eq(1)
+      expect(buffer.audit_captures.size).to eq(1)
+      expect(buffer.audit_captures.first[:action]).to eq("create")
+    end
+
+    it "does not duplicate audit callbacks if the module is included twice" do
+      model_class = build_callback_model_class
+      model_class.include(described_class)
+      model_class.include(described_class)
+
+      model_class.new.create!
+
+      expect(buffer.audit_captures.size).to eq(1)
+      expect(buffer.audit_captures.first[:action]).to eq("create")
+    end
+
+    it "registers one audit callback per lifecycle event" do
+      model_class = build_callback_model_class
+      model_class.include(described_class)
+      record = model_class.new
+
+      record.create!
+      record.update!
+      record.destroy!
+
+      expect(buffer.audit_captures.map { |audit| audit[:action] }).to eq(%w[create update destroy])
+    end
+
+    it "does not record or dispatch anything when audit_tracking is disabled" do
+      OpenTrace.config.audit_tracking = false
+      model_class = build_callback_model_class
+      model_class.job_dispatches = 0
+      model_class.after_create do |_record|
+        model_class.job_dispatches += 1
+      end
+      model_class.include(described_class)
+
+      model_class.new.create!
+
+      expect(model_class.job_dispatches).to eq(1)
+      expect(buffer.audit_captures).to be_empty
     end
   end
 

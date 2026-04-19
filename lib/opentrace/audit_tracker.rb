@@ -5,6 +5,9 @@ module OpenTrace
   # Captures before/after diffs on create, update, and destroy using saved_changes.
   module AuditTracker
     def self.included(base)
+      return if base.instance_variable_get(:@opentrace_audit_tracker_installed)
+
+      base.instance_variable_set(:@opentrace_audit_tracker_installed, true)
       base.after_create  { |record| OpenTrace::AuditTracker.track(record, :create) }
       base.after_update  { |record| OpenTrace::AuditTracker.track(record, :update) }
       base.after_destroy { |record| OpenTrace::AuditTracker.track(record, :destroy) }
