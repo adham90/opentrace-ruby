@@ -11,8 +11,6 @@ module OpenTrace
     FIBER_KEYS = %i[
       opentrace_collector
       opentrace_cached_context
-      opentrace_sql_count
-      opentrace_sql_total_ms
       opentrace_trace_id
       opentrace_span_id
       opentrace_parent_span_id
@@ -42,8 +40,6 @@ module OpenTrace
 
       request_id = env["action_dispatch.request_id"] || env["HTTP_X_REQUEST_ID"]
       OpenTrace.current_request_id = request_id
-      Fiber[:opentrace_sql_count] = 0
-      Fiber[:opentrace_sql_total_ms] = 0.0
 
       # Extract or generate trace context
       if OpenTrace.config.trace_propagation
@@ -156,6 +152,12 @@ module OpenTrace
       buffer = InstrumentationContext.setup(env: env)
       return nil unless buffer
 
+      # Resolve the user-configured context proc once per request and cache it
+      # (may be expensive: Browser.new, DB reads). user_id/tenant_id captured
+      # here ship as top-level fields on the http.request doc.
+      ctx = OpenTrace.cached_request_context
+      buffer.context = ctx if ctx.is_a?(Hash) && !ctx.empty?
+
       buffer.request_method = env["REQUEST_METHOD"]
       buffer.request_path   = env["PATH_INFO"]
       buffer.ip_address     = env["HTTP_X_FORWARDED_FOR"]&.split(",")&.first&.strip || env["REMOTE_ADDR"]
@@ -179,15 +181,23 @@ module OpenTrace
       Fiber[:opentrace_buffer]
     end
 
-    # Read the request body from rack.input if it fits under the configured
-    # max_request_body_bytes limit.
+    # Read the request body from rack.input — OPT-IN only.
+    #
+    # Consuming rack.input by default is unsafe: on Rack 3 / Falcon the input
+    # may be a non-rewindable stream, and buffering bodies captures secrets
+    # (passwords) on every request. We only read when the user explicitly sets
+    # `capture_request_body`, and even then only when the stream is rewindable
+    # so we never eat the body before the downstream app reads it.
     def capture_request_body(buffer, env, cfg)
+      return unless cfg.capture_request_body
+
       content_length = env["CONTENT_LENGTH"]&.to_i
       return unless content_length && content_length > 0
       return unless content_length < cfg.max_request_body_bytes
 
       input = env["rack.input"]
       return unless input
+      return unless input.respond_to?(:rewind)
 
       body = input.read
       buffer.request_body = body if body && !body.empty?

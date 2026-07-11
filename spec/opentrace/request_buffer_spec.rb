@@ -238,6 +238,41 @@ RSpec.describe OpenTrace::RequestBuffer do
     end
   end
 
+  describe "byte cap enforcement during accumulation (finding #2)" do
+    it "stops appending records once the buffer crosses max_buffer_bytes" do
+      # base (1024) + a bit of headroom, so the second big query blows the cap.
+      capped = described_class.new(max_buffer_bytes: 1024 + 3000)
+
+      capped.record_sql(raw_sql: "a" * 2000, duration_ms: 1.0) # fits: 1024+2000
+      capped.record_sql(raw_sql: "b" * 2000, duration_ms: 1.0) # would be 3024+2000 > cap → dropped
+      capped.record_log(level: "INFO", message: "c" * 2000)    # already latched → dropped
+
+      expect(capped.sql_captures.length).to eq(1)
+      expect(capped.logs).to be_empty
+      expect(capped.exceeded_buffer?).to eq(true)
+    end
+
+    it "flags buffer_exceeded on the produced document" do
+      capped = described_class.new(max_buffer_bytes: 1024 + 100)
+      capped.record_sql(raw_sql: "z" * 5000, duration_ms: 1.0)
+
+      doc = capped.to_document(capture_level: :full)
+      expect(doc[:buffer_exceeded]).to eq(true)
+    end
+
+    it "resets the cap state on reset!" do
+      capped = described_class.new(max_buffer_bytes: 1024 + 100)
+      capped.record_sql(raw_sql: "z" * 5000, duration_ms: 1.0)
+      expect(capped.exceeded_buffer?).to eq(true)
+
+      capped.reset!
+      expect(capped.exceeded_buffer?).to eq(false)
+      capped2_sql = "small"
+      capped.record_sql(raw_sql: capped2_sql, duration_ms: 1.0)
+      expect(capped.sql_captures.length).to eq(1)
+    end
+  end
+
   describe "#reset!" do
     it "clears all state" do
       buffer.request_method = "GET"

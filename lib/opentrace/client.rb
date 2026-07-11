@@ -257,10 +257,14 @@ module OpenTrace
             next nil
           end
         end
-        # PII scrubbing (runs on background thread)
-        if @config.pii_scrubbing && payload[:body]
+        # PII scrubbing (runs on background thread). Scrub both the nested body
+        # and the top-level message string.
+        if @config.pii_scrubbing
           active_patterns = build_pii_patterns
-          PiiScrubber.scrub!(payload[:body], patterns: active_patterns)
+          PiiScrubber.scrub!(payload[:body], patterns: active_patterns) if payload[:body]
+          if payload[:message].is_a?(String)
+            payload[:message] = PiiScrubber.scrub_string(payload[:message], active_patterns)
+          end
         end
 
         fit_payload(payload)
@@ -343,7 +347,7 @@ module OpenTrace
       dropped = batch.size - re_enqueued
       if dropped > 0
         @stats.increment(:dropped_error, dropped)
-        fire_on_drop(dropped, :shutdown)
+        fire_on_drop(dropped, :rate_limited)
       end
     end
 
@@ -372,6 +376,9 @@ module OpenTrace
       batch_id = SecureRandom.uuid
       attempts = 0
       max_attempts = @config.max_retries + 1
+      # Declare in method scope: a variable first assigned inside the loop block
+      # would be block-local, leaving this a NameError on exhausted 5xx retries.
+      response = nil
 
       loop do
         attempts += 1

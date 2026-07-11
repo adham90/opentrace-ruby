@@ -140,8 +140,12 @@ RSpec.describe OpenTrace::Config do
   end
 
   describe "deep capture defaults" do
-    it "capture_depth defaults to :standard" do
-      expect(config.capture_depth).to eq(:standard)
+    it "capture_depth defaults to :none (deep capture is opt-in)" do
+      expect(config.capture_depth).to eq(:none)
+    end
+
+    it "capture_request_body defaults to false (reading rack.input is opt-in)" do
+      expect(config.capture_request_body).to be false
     end
 
     it "capture_rules stores a block" do
@@ -168,10 +172,6 @@ RSpec.describe OpenTrace::Config do
 
     it "audit_exclude_fields has sensible defaults" do
       expect(config.audit_exclude_fields).to eq(%w[updated_at created_at password_digest])
-    end
-
-    it "serialization_format defaults to :json" do
-      expect(config.serialization_format).to eq(:json)
     end
   end
 

@@ -21,5 +21,4 @@ Gem::Specification.new do |spec|
 
   # logger was removed from default gems in Ruby 4.0
   spec.add_dependency "logger"
-  spec.add_dependency "msgpack", ">= 1.7"  # optional: for msgpack serialization format
 end

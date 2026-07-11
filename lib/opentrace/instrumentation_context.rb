@@ -65,9 +65,15 @@ module OpenTrace
           # Build domain overrides from capture rules (if configured)
           domain_overrides = configured_domain_overrides
 
-          # Produce the document
-          doc = buf.to_document(capture_level: capture_level, domain_overrides: domain_overrides)
+          # Produce the document. Timeline is omitted unless the user opted in
+          # via config.timeline (default false).
+          doc = buf.to_document(
+            capture_level: capture_level,
+            domain_overrides: domain_overrides,
+            include_timeline: timeline_enabled?
+          )
           doc[:duration_ms] = duration_ms if duration_ms
+          doc[:error] = true if error
           doc[:pending_explains] = Fiber[:opentrace_pending_explains] if Fiber[:opentrace_pending_explains]
 
           doc
@@ -162,6 +168,12 @@ module OpenTrace
         CaptureRules::LEVELS.include?(level) ? level : :standard
       rescue StandardError
         :standard
+      end
+
+      def timeline_enabled?
+        !!active_config.timeline
+      rescue StandardError
+        false
       end
 
       def configured_domain_overrides

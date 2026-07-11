@@ -318,29 +318,28 @@ if defined?(::Rails::Railtie)
           Net::HTTP.prepend(OpenTrace::HttpTracker)
         end
 
-        # Start background monitors (opt-in)
+        # Start background monitors (opt-in). Monitor threads do not survive
+        # fork(), so in forking servers (Puma) call
+        # OpenTrace::Railtie.restart_monitors_after_fork! from on_worker_boot.
         if OpenTrace.config.pool_monitoring
           require_relative "pool_monitor"
-          @pool_monitor = OpenTrace::PoolMonitor.new(
-            interval: OpenTrace.config.pool_monitoring_interval
-          )
-          @pool_monitor.start
+          monitor = OpenTrace::PoolMonitor.new(interval: OpenTrace.config.pool_monitoring_interval)
+          monitor.start
+          OpenTrace::Railtie.register_monitor(monitor)
         end
 
         if OpenTrace.config.queue_monitoring
           require_relative "queue_monitor"
-          @queue_monitor = OpenTrace::QueueMonitor.new(
-            interval: OpenTrace.config.queue_monitoring_interval
-          )
-          @queue_monitor.start
+          monitor = OpenTrace::QueueMonitor.new(interval: OpenTrace.config.queue_monitoring_interval)
+          monitor.start
+          OpenTrace::Railtie.register_monitor(monitor)
         end
 
         if OpenTrace.config.runtime_metrics
           require_relative "runtime_monitor"
-          @runtime_monitor = OpenTrace::RuntimeMonitor.new(
-            interval: OpenTrace.config.runtime_metrics_interval
-          )
-          @runtime_monitor.start
+          monitor = OpenTrace::RuntimeMonitor.new(interval: OpenTrace.config.runtime_metrics_interval)
+          monitor.start
+          OpenTrace::Railtie.register_monitor(monitor)
         end
 
         # Audit trail (opt-in)
@@ -351,16 +350,34 @@ if defined?(::Rails::Railtie)
       end
 
       class << self
+        # Registered background monitors (pool/queue/runtime), so they can be
+        # restarted after a fork.
+        def register_monitor(monitor)
+          (@monitors ||= []) << monitor
+        end
+
+        # Restart every registered monitor whose thread was lost across a fork.
+        # Call from the forking server's after-fork hook (e.g. Puma on_worker_boot).
+        def restart_monitors_after_fork!
+          (@monitors || []).each(&:restart_after_fork!)
+        end
+
         private
 
         def extract_params_to_buffer(payload, buffer)
-          controller = payload[:controller_instance]
-          return unless controller
+          # ActionController::Instrumentation never sets :controller_instance.
+          # Prefer the request's filtered_parameters (secrets already masked),
+          # falling back to the raw :params on the notification payload.
+          request = payload[:request]
+          params = if request.respond_to?(:filtered_parameters)
+                     request.filtered_parameters
+                   else
+                     payload[:params]
+                   end
+          return unless params.is_a?(Hash)
 
-          if controller.respond_to?(:request, true) && controller.request.respond_to?(:filtered_parameters)
-            params = controller.request.filtered_parameters.except("controller", "action")
-            buffer.request_params = params unless params.empty?
-          end
+          filtered = params.reject { |k, _| k.to_s == "controller" || k.to_s == "action" }
+          buffer.request_params = filtered unless filtered.empty?
         rescue StandardError
           # Swallow
         end

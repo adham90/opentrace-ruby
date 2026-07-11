@@ -46,6 +46,20 @@ RSpec.describe OpenTrace::Client, "retry and circuit breaker" do
       expect(call_count).to eq(3)
     end
 
+    it "returns the final 5xx response after exhausting retries without raising NameError (finding #6)" do
+      config.max_retries = 1 # 2 attempts total
+      allow(client).to receive(:sleep) # skip backoff
+
+      response_5xx = Net::HTTPInternalServerError.new("1.1", "500", "Internal Server Error")
+      allow(client).to receive(:http_post).and_return(response_5xx)
+
+      result = nil
+      expect { result = client.send(:send_with_retry, "[]") }.not_to raise_error
+      expect(result).to equal(response_5xx)
+      # 2 attempts → 1 retry recorded
+      expect(client.stats.get(:retries)).to eq(1)
+    end
+
     it "retries on 502 gateway errors" do
       call_count = 0
       stub_request(:post, "https://opentrace.test/api/logs")
@@ -95,6 +109,20 @@ RSpec.describe OpenTrace::Client, "retry and circuit breaker" do
 
       # 429 is not retried in the retry loop — only 1 attempt
       expect(call_count).to eq(1)
+    end
+
+    it "labels dropped rate-limit re-enqueues as :rate_limited, not :shutdown (finding LOW)" do
+      drops = []
+      config.on_drop = ->(count, reason) { drops << [count, reason] }
+      rl_client = described_class.new(config)
+      # Close the queue so the re-enqueue attempt in handle_rate_limit fails,
+      # forcing the batch to be dropped.
+      rl_client.instance_variable_get(:@queue).close
+
+      response = Net::HTTPTooManyRequests.new("1.1", "429", "Too Many Requests")
+      rl_client.send(:handle_rate_limit, response, [{ level: "INFO", message: "drop me" }])
+
+      expect(drops).to include([1, :rate_limited])
     end
 
     it "stops retrying after max_retries exhausted" do

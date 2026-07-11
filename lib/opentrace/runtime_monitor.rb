@@ -1,18 +1,24 @@
 # frozen_string_literal: true
 
+require_relative "fork_safe_monitor"
+
 module OpenTrace
   class RuntimeMonitor
+    include ForkSafeMonitor
+
     DEFAULT_INTERVAL = 30 # seconds
 
     def initialize(interval: DEFAULT_INTERVAL)
       @interval = interval
       @thread = nil
       @running = false
+      @pid = nil
     end
 
     def start
       return if @running
       @running = true
+      @pid = Process.pid
       @thread = Thread.new { monitor_loop }
       @thread.abort_on_exception = false
       @thread.report_on_exception = false

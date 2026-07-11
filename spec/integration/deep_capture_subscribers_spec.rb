@@ -525,4 +525,48 @@ RSpec.describe "Deep capture subscribers" do
       expect(audits.select { |a| a[:action]&.start_with?("bulk_") }).to be_empty
     end
   end
+
+  # ── process_action subscriber params capture (finding #10) ──
+
+  describe "process_action subscriber params capture" do
+    it "captures filtered_parameters when detailed_request_log is on" do
+      OpenTrace.config.detailed_request_log = true
+      request = double("request",
+        filtered_parameters: { "controller" => "users", "action" => "show", "id" => "42", "q" => "hi" })
+
+      ActiveSupport::Notifications.instrument("process_action.action_controller", {
+        controller: "UsersController", action: "show", status: 200,
+        params: { "controller" => "users", "action" => "show", "id" => "42" },
+        request: request
+      }) {}
+
+      expect(buffer.request_params).to eq({ "id" => "42", "q" => "hi" })
+    ensure
+      OpenTrace.config.detailed_request_log = false
+    end
+
+    it "falls back to payload[:params] when no request object is present" do
+      OpenTrace.config.detailed_request_log = true
+
+      ActiveSupport::Notifications.instrument("process_action.action_controller", {
+        controller: "UsersController", action: "index", status: 200,
+        params: { "controller" => "users", "action" => "index", "page" => "2" }
+      }) {}
+
+      expect(buffer.request_params).to eq({ "page" => "2" })
+    ensure
+      OpenTrace.config.detailed_request_log = false
+    end
+
+    it "does not capture params when detailed_request_log is off and status < 500" do
+      OpenTrace.config.detailed_request_log = false
+
+      ActiveSupport::Notifications.instrument("process_action.action_controller", {
+        controller: "UsersController", action: "index", status: 200,
+        params: { "controller" => "users", "action" => "index", "page" => "2" }
+      }) {}
+
+      expect(buffer.request_params).to be_nil
+    end
+  end
 end
