@@ -43,10 +43,8 @@ module OpenTrace
                   # Audit trail
                   :audit_tracking, :audit_max_events_per_request,
                   :audit_exclude_models, :audit_exclude_fields, :audit_actor,
-                  # Body capture
-                  :max_request_body_bytes,
-                  # Serialization format
-                  :serialization_format
+                  # Body capture (opt-in: reading rack.input is unsafe on some servers)
+                  :capture_request_body, :max_request_body_bytes
 
     # Custom writers that invalidate caches
     attr_reader :enabled, :min_level, :allowed_levels, :ignore_paths, :sample_rate
@@ -141,8 +139,12 @@ module OpenTrace
       @explain_threshold_ms = 100.0   # Threshold for EXPLAIN capture
       @runtime_metrics = false        # Collect GC/runtime metrics
       @runtime_metrics_interval = 30  # Interval in seconds
-      # Deep capture
-      @capture_depth = :standard
+      # Deep capture — OFF by default. Per-request buffer checkout, per-query
+      # caller_locations/fingerprinting and body buffering are only paid for
+      # when the user explicitly opts in by raising capture_depth (or setting a
+      # domain override / capture_rules). :none keeps stock config zero-cost.
+      # ponytail: single default flip gates all deep-capture overhead.
+      @capture_depth = :none
       @capture_rules_block = nil
       # Per-domain overrides (nil = follow capture_depth)
       @email_capture = nil
@@ -160,10 +162,10 @@ module OpenTrace
       @audit_exclude_models = []
       @audit_exclude_fields = %w[updated_at created_at password_digest]
       @audit_actor = nil
-      # Body capture
+      # Body capture — reading rack.input is opt-in (unsafe on Rack 3 / Falcon,
+      # and buffers request bodies that may contain passwords).
+      @capture_request_body = false
       @max_request_body_bytes = 262_144    # 256KB
-      # Serialization format
-      @serialization_format = :json
       @level_cache = nil
       @enabled_cache = nil
     end

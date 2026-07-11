@@ -7,7 +7,9 @@ module OpenTrace
     REDACTED = "[REDACTED]"
 
     PATTERNS = {
-      credit_card: /\b(?:\d[ -]*?){13,16}\b/,
+      # 15-16 digit runs (optionally space/dash separated). The old {13,16}
+      # bound matched bare 13-digit epoch-millisecond timestamps; require 15+.
+      credit_card: /\b(?:\d[ -]?){15,16}\b/,
       email: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/,
       ssn: /\b\d{3}-\d{2}-\d{4}\b/,
       phone: /\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/,
@@ -15,6 +17,8 @@ module OpenTrace
       api_key: /\b(?:sk|pk|api[_-]?key)[_-][A-Za-z0-9]{20,}\b/i
     }.freeze
 
+    # Matched by SUBSTRING (not exact key) so variants like
+    # password_confirmation, stripe_token and user_password are also redacted.
     SENSITIVE_KEYS = Set.new(%w[
       password passwd secret token api_key apikey
       authorization auth_token access_token refresh_token
@@ -30,27 +34,33 @@ module OpenTrace
       active_patterns = patterns || PATTERNS.values
 
       hash.each do |key, value|
-        key_s = key.to_s.downcase
-        if SENSITIVE_KEYS.include?(key_s)
+        if sensitive_key?(key.to_s.downcase)
           hash[key] = REDACTED
-        elsif value.is_a?(String)
-          hash[key] = scrub_string(value, active_patterns)
-        elsif value.is_a?(Hash)
-          scrub!(value, patterns: active_patterns)
-        elsif value.is_a?(Array)
-          value.each_with_index do |v, i|
-            if v.is_a?(String)
-              value[i] = scrub_string(v, active_patterns)
-            elsif v.is_a?(Hash)
-              scrub!(v, patterns: active_patterns)
-            end
-          end
+        else
+          hash[key] = scrub_value(value, active_patterns)
         end
       end
 
       hash
     rescue StandardError
       hash
+    end
+
+    # Recursively scrub any value — strings, nested hashes, and arrays
+    # (including arrays-of-arrays).
+    def scrub_value(value, patterns)
+      case value
+      when String then scrub_string(value, patterns)
+      when Hash   then scrub!(value, patterns: patterns)
+      when Array  then value.map! { |v| scrub_value(v, patterns) }
+      else value
+      end
+    rescue StandardError
+      value
+    end
+
+    def sensitive_key?(key_s)
+      SENSITIVE_KEYS.any? { |sk| key_s.include?(sk) }
     end
 
     def scrub_string(str, patterns)

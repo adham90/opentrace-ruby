@@ -46,48 +46,6 @@ RSpec.describe "Custom transaction naming" do
     end
   end
 
-  describe "PayloadBuilder integration" do
-    it "uses transaction name in message when present" do
-      entry = [
-        :request,
-        Time.now - 0.1, Time.now,
-        "OrdersController", "create", "POST", "/orders",
-        200, nil, nil, nil,
-        "req-123", "trace-456", "span-789", nil,
-        nil, nil,
-        { transaction_name: "checkout.create" }
-      ].freeze
-
-      config = OpenTrace.config
-      payload = OpenTrace::PayloadBuilder.materialize(entry, config)
-
-      expect(payload[:message]).to start_with("checkout.create 200")
-      # Flat format: transaction_name lives in body.context
-      expect(payload.dig(:body, :context, :transaction_name)).to eq("checkout.create")
-    end
-
-    it "uses default method/path message when no transaction name" do
-      entry = [
-        :request,
-        Time.now - 0.1, Time.now,
-        "OrdersController", "create", "POST", "/orders",
-        200, nil, nil, nil,
-        "req-123", "trace-456", "span-789", nil,
-        nil, nil, nil
-      ].freeze
-
-      config = OpenTrace.config
-      payload = OpenTrace::PayloadBuilder.materialize(entry, config)
-
-      expect(payload[:message]).to start_with("POST /orders 200")
-      # Flat format: body.context should not contain transaction_name
-      context = payload.dig(:body, :context)
-      if context
-        expect(context).not_to have_key(:transaction_name)
-      end
-    end
-  end
-
   describe "Middleware cleanup" do
     it "clears transaction name after request" do
       app = ->(_env) { [200, {}, ["OK"]] }

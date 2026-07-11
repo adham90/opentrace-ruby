@@ -25,35 +25,27 @@ RSpec.describe "EXPLAIN Plan Capture" do
 
     after { OpenTrace.shutdown(timeout: 1) }
 
-    it "passes through pending_explains in extra without ActiveRecord" do
-      started = Time.now
-      finished = started + 0.5
+    it "skips explain for raw request documents when ActiveRecord is absent" do
+      doc = {
+        started_at: Process.clock_gettime(Process::CLOCK_MONOTONIC),
+        request: { method: "GET", path: "/users" },
+        response: { status: 200 },
+        pending_explains: [{ sql: "SELECT * FROM users", duration_ms: 150.0, name: "User Load" }]
+      }
 
-      entry = [
-        :request, started, finished, "UsersController", "index",
-        "GET", "/users", 200, nil, nil, nil,
-        "req-123", "trace-123", "span-123", nil, nil, nil,
-        { pending_explains: [{ sql: "SELECT * FROM users", duration_ms: 150.0, name: "User Load" }] }
-      ]
-
-      # Without ActiveRecord defined, explain should be skipped
-      payload = OpenTrace::PayloadBuilder.materialize(entry, OpenTrace.config)
+      payload = OpenTrace::PayloadBuilder.materialize([:raw_document, doc], OpenTrace.config)
       expect(payload).to be_a(Hash)
-      # Flat format: explain plans would appear in body.queries, not metadata
       expect(payload.dig(:body, :queries)).to be_nil
     end
 
-    it "materializes request without pending_explains" do
-      started = Time.now
-      finished = started + 0.1
+    it "materializes a raw request document without pending_explains" do
+      doc = {
+        started_at: Process.clock_gettime(Process::CLOCK_MONOTONIC),
+        request: { method: "GET", path: "/users/1" },
+        response: { status: 200 }
+      }
 
-      entry = [
-        :request, started, finished, "UsersController", "show",
-        "GET", "/users/1", 200, nil, nil, nil,
-        "req-456", nil, nil, nil, nil, nil, nil
-      ]
-
-      payload = OpenTrace::PayloadBuilder.materialize(entry, OpenTrace.config)
+      payload = OpenTrace::PayloadBuilder.materialize([:raw_document, doc], OpenTrace.config)
       expect(payload[:message]).to include("GET /users/1 200")
     end
 

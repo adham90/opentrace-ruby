@@ -6,10 +6,8 @@ require_relative "opentrace/version"
 require_relative "opentrace/config"
 require_relative "opentrace/stats"
 require_relative "opentrace/circuit_breaker"
-require_relative "opentrace/ring_buffer"
 require_relative "opentrace/serializer"
 require_relative "opentrace/payload_builder"
-require_relative "opentrace/pipeline"
 require_relative "opentrace/client"
 require_relative "opentrace/logger"
 require_relative "opentrace/log_forwarder"
@@ -191,6 +189,19 @@ module OpenTrace
       config.enabled = true
     end
 
+    # Resolve the user-configured context (Proc/Hash) once per request and
+    # cache the result on the current Fiber. The proc may be expensive
+    # (Browser.new, DB queries) so we never call it more than once per request.
+    # Cleared by the middleware ensure block via FIBER_KEYS.
+    def cached_request_context
+      cached = Fiber[:opentrace_cached_context]
+      return cached unless cached.nil?
+
+      Fiber[:opentrace_cached_context] = resolve_context_raw || {}
+    rescue StandardError
+      {}
+    end
+
     def current_request_id
       Fiber[:opentrace_request_id]
     end
@@ -312,11 +323,17 @@ module OpenTrace
 
     private
 
+    # Mutex guarding lazy Client construction so concurrent first-callers don't
+    # each build a Client (and register duplicate at_exit hooks).
+    CLIENT_INIT_MUTEX = Mutex.new
+
     def client
-      @client ||= begin
-        c = Client.new(config, sampler: sampler)
-        register_at_exit_hook!
-        c
+      @client || CLIENT_INIT_MUTEX.synchronize do
+        @client ||= begin
+          c = Client.new(config, sampler: sampler)
+          register_at_exit_hook!
+          c
+        end
       end
     end
 

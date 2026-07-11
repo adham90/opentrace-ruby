@@ -6,6 +6,12 @@ require "opentrace/instrumentation_context"
 RSpec.describe OpenTrace::InstrumentationContext do
   before(:each) do
     described_class.reset!
+    # Deep capture is opt-in (config default capture_depth: :none). These unit
+    # tests exercise the buffer directly, so install a :standard capture depth
+    # unless a test reconfigures via OpenTrace.configure.
+    default_cfg = OpenTrace::Config.new
+    default_cfg.capture_depth = :standard
+    described_class.configure!(default_cfg)
     Fiber[described_class::FIBER_KEY] = nil
     Fiber[:opentrace_buffer_allocation_bytes] = nil
   end
@@ -386,6 +392,29 @@ RSpec.describe OpenTrace::InstrumentationContext do
         configure_capture!(max_total_buffer_bytes: 1234)
 
         expect(described_class.memory_guard.max_total_bytes).to eq(1234)
+      end
+
+      it "omits timeline from the document when config.timeline is false (finding #11)" do
+        configure_capture!(capture_depth: :standard, timeline: false)
+
+        buffer = described_class.setup(env: { "PATH_INFO" => "/t" })
+        buffer.request_method = "GET"
+        buffer.record_timeline(type: :sql, name: "User Load", duration_ms: 1.0)
+
+        doc = described_class.teardown(status: 200, duration_ms: 1)
+        expect(doc[:timeline]).to be_nil
+      end
+
+      it "includes timeline when config.timeline is true" do
+        configure_capture!(capture_depth: :standard, timeline: true)
+
+        buffer = described_class.setup(env: { "PATH_INFO" => "/t" })
+        buffer.request_method = "GET"
+        buffer.record_timeline(type: :sql, name: "User Load", duration_ms: 1.0)
+
+        doc = described_class.teardown(status: 200, duration_ms: 1)
+        expect(doc[:timeline]).to be_a(Array)
+        expect(doc[:timeline].length).to eq(1)
       end
     end
   end

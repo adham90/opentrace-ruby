@@ -42,6 +42,41 @@ RSpec.describe OpenTrace::RuntimeMonitor do
     monitor.stop
   end
 
+  describe "fork safety (finding #12)" do
+    it "restarts the monitor thread after a simulated fork" do
+      monitor = described_class.new(interval: 60)
+      monitor.start
+      original_thread = monitor.instance_variable_get(:@thread)
+      expect(original_thread).to be_a(Thread)
+
+      # Simulate crossing a fork boundary: the recorded PID no longer matches.
+      monitor.instance_variable_set(:@pid, -1)
+      restarted = monitor.restart_after_fork!
+
+      expect(restarted).to be true
+      new_thread = monitor.instance_variable_get(:@thread)
+      expect(new_thread).to be_a(Thread)
+      expect(new_thread).not_to equal(original_thread)
+      expect(monitor.running?).to be true
+      monitor.stop
+    end
+
+    it "is a no-op when the process has not forked" do
+      monitor = described_class.new(interval: 60)
+      monitor.start
+      thread = monitor.instance_variable_get(:@thread)
+
+      expect(monitor.restart_after_fork!).to be false
+      expect(monitor.instance_variable_get(:@thread)).to equal(thread)
+      monitor.stop
+    end
+
+    it "is a no-op when never started" do
+      monitor = described_class.new(interval: 60)
+      expect(monitor.restart_after_fork!).to be false
+    end
+  end
+
   describe "collect_and_send" do
     it "sends runtime metrics event" do
       enqueued = []

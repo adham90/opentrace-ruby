@@ -276,6 +276,9 @@ RSpec.describe OpenTrace::Middleware do
     end
 
     describe "request body capture" do
+      # Reading rack.input is opt-in (unsafe on Rack 3 / Falcon by default).
+      before { configure_opentrace!(capture_request_body: true) }
+
       it "captures request body when under size limit" do
         body_content = '{"name":"test"}'
         captured_body = nil
@@ -349,6 +352,79 @@ RSpec.describe OpenTrace::Middleware do
           "PATH_INFO" => "/"
         )
 
+        expect(captured_body).to be_nil
+      end
+    end
+
+    describe "deep capture is opt-in with stock config (finding #1/#3)" do
+      def stock_configure!
+        # Start from a pristine config so we exercise true stock defaults
+        # (the enclosing `before` opts into :standard deep capture via the helper).
+        OpenTrace.reset!
+        OpenTrace.configure do |c|
+          c.endpoint = "https://opentrace.test"
+          c.api_key  = "test-key-123"
+          c.service  = "test-service"
+          c.flush_interval = 0.2
+          c.compression = false
+        end
+      end
+
+      it "checks out NO request buffer with default config" do
+        stock_configure!
+        captured_buffer = :unset
+        app = described_class.new(->(_env) {
+          captured_buffer = Fiber[:opentrace_buffer]
+          [200, {}, ["OK"]]
+        })
+
+        app.call("REQUEST_METHOD" => "GET", "PATH_INFO" => "/users")
+
+        # No buffer means the SQL subscriber's expensive per-query branch
+        # (caller_locations, MD5 fingerprint, open_transactions) is unreachable.
+        expect(captured_buffer).to be_nil
+        expect(described_class.new(inner_app).send(:request_capture_enabled?, OpenTrace.config)).to be false
+      end
+
+      it "does not read rack.input with default config" do
+        stock_configure!
+        input = StringIO.new('{"password":"secret"}')
+        allow(input).to receive(:read).and_call_original
+
+        app = described_class.new(->(_env) { [200, {}, ["OK"]] })
+        app.call(
+          "REQUEST_METHOD" => "POST",
+          "PATH_INFO" => "/login",
+          "CONTENT_LENGTH" => "21",
+          "rack.input" => input
+        )
+
+        expect(input).not_to have_received(:read)
+      end
+
+      it "does not consume a non-rewindable input even when capture is enabled" do
+        configure_opentrace!(capture_request_body: true)
+        # A streaming input that cannot be rewound (Rack 3 / Falcon style).
+        non_rewindable = Object.new
+        def non_rewindable.read = "body-data"
+        # deliberately no #rewind
+        read_called = false
+        non_rewindable.define_singleton_method(:read) { read_called = true; "body-data" }
+
+        captured_body = :unset
+        app = described_class.new(->(_env) {
+          captured_body = Fiber[:opentrace_buffer]&.request_body
+          [200, {}, ["OK"]]
+        })
+
+        app.call(
+          "REQUEST_METHOD" => "POST",
+          "PATH_INFO" => "/stream",
+          "CONTENT_LENGTH" => "9",
+          "rack.input" => non_rewindable
+        )
+
+        expect(read_called).to be false
         expect(captured_body).to be_nil
       end
     end
@@ -501,6 +577,38 @@ RSpec.describe OpenTrace::Middleware do
         expect(doc[:request][:path]).to eq("/fail")
       end
 
+      it "ships user_id/tenant_id from the context proc on the request doc (finding #4)" do
+        configure_opentrace!(context: -> { { user_id: 42, tenant_id: 7, plan: "pro" } })
+
+        enqueued = []
+        allow(OpenTrace).to receive(:client_enqueue_raw) { |doc| enqueued << doc }
+
+        app = described_class.new(->(_env) { [200, {}, ["OK"]] })
+        app.call("REQUEST_METHOD" => "GET", "PATH_INFO" => "/dash")
+
+        doc = enqueued.first
+        expect(doc[:context]).to include(user_id: 42, tenant_id: 7)
+
+        payload = OpenTrace::PayloadBuilder.materialize([:raw_document, doc], OpenTrace.config)
+        expect(payload[:user_id]).to eq("42")
+        expect(payload[:tenant_id]).to eq("7")
+        expect(payload.dig(:body, :context)).to eq(plan: "pro")
+      end
+
+      it "ships level:error on the request doc when the app raises (finding #9)" do
+        enqueued = []
+        allow(OpenTrace).to receive(:client_enqueue_raw) { |doc| enqueued << doc }
+
+        error_app = described_class.new(->(_env) { raise "boom" })
+        expect { error_app.call("REQUEST_METHOD" => "GET", "PATH_INFO" => "/err") }.to raise_error("boom")
+
+        doc = enqueued.first
+        expect(doc[:error]).to be true
+
+        payload = OpenTrace::PayloadBuilder.materialize([:raw_document, doc], OpenTrace.config)
+        expect(payload[:level]).to eq("error")
+      end
+
       it "does not enqueue when OpenTrace is disabled" do
         OpenTrace.disable!
 
@@ -584,20 +692,6 @@ RSpec.describe OpenTrace::Middleware do
         expect(captured_collector).to be_a(OpenTrace::RequestCollector)
       end
 
-      it "still sets Fiber[:opentrace_sql_count] and Fiber[:opentrace_sql_total_ms]" do
-        captured_sql_count = nil
-        captured_sql_total = nil
-        app = described_class.new(->(env) {
-          captured_sql_count = Fiber[:opentrace_sql_count]
-          captured_sql_total = Fiber[:opentrace_sql_total_ms]
-          [200, {}, ["OK"]]
-        })
-
-        app.call("REQUEST_METHOD" => "GET", "PATH_INFO" => "/")
-
-        expect(captured_sql_count).to eq(0)
-        expect(captured_sql_total).to eq(0.0)
-      end
     end
   end
 end

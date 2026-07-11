@@ -55,6 +55,11 @@ module OpenTrace
 
       @audit_truncated = false
 
+      # Running byte estimate + hard cap flag. Enforced during accumulation so a
+      # single runaway request can't grow the buffer past @max_buffer_bytes.
+      @buffer_bytes    = BASE_BYTE_ESTIMATE
+      @buffer_exceeded = false
+
       # Identity — set on checkout
       @id         = nil
       @started_at = nil
@@ -69,6 +74,8 @@ module OpenTrace
     def record_sql(raw_sql:, normalized_sql: nil, binds: nil, duration_ms:, name: nil,
                    cached: false, row_count: nil, in_transaction: false,
                    fingerprint: nil, table: nil, caller_location: nil)
+      return unless room_for?(string_bytes(raw_sql))
+
       @sql_captures << {
         raw_sql: raw_sql,
         normalized_sql: normalized_sql,
@@ -88,6 +95,8 @@ module OpenTrace
                     request_headers: nil, request_body: nil, response_headers: nil,
                     response_body: nil, response_size: nil, retry_attempt: nil,
                     error_class: nil)
+      return unless room_for?(string_bytes(request_body) + string_bytes(response_body))
+
       @http_captures << {
         method: method,
         url: url,
@@ -109,6 +118,8 @@ module OpenTrace
                      body_html: nil, body_text: nil, template: nil, variables: nil,
                      attachments: nil, delivery_status: nil, smtp_response: nil,
                      duration_ms: nil)
+      return unless room_for?(string_bytes(body_html) + string_bytes(body_text))
+
       @email_captures << {
         mailer_class: mailer_class,
         mailer_action: mailer_action,
@@ -128,6 +139,8 @@ module OpenTrace
 
     def record_file(action:, filename:, size_bytes: nil, content_type: nil,
                     service: nil, key: nil, duration_ms: nil)
+      return unless room_for?(string_bytes(filename) + string_bytes(key))
+
       @file_captures << {
         action: action,
         filename: filename,
@@ -142,6 +155,7 @@ module OpenTrace
     def record_audit(action:, record_type:, record_id: nil, actor_id: nil,
                      actor_type: nil, changed_fields: nil, full_before: nil,
                      full_after: nil)
+      # Audit events are capped by count (@max_audit_events), not the byte cap.
       if @audit_captures.size >= @max_audit_events
         @audit_truncated = true
         return
@@ -160,6 +174,8 @@ module OpenTrace
     end
 
     def record_log(level:, message:, metadata: nil)
+      return unless room_for?(string_bytes(message))
+
       @logs << {
         level: level,
         message: message,
@@ -168,6 +184,8 @@ module OpenTrace
     end
 
     def record_timeline(type:, name:, duration_ms: nil, extra: {})
+      return unless room_for?(string_bytes(name) + 48)
+
       offset = if @started_at
                  ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - @started_at) * 1000).round(1)
                else
@@ -215,14 +233,14 @@ module OpenTrace
     end
 
     def exceeded_buffer?
-      byte_size > @max_buffer_bytes
+      @buffer_exceeded || byte_size > @max_buffer_bytes
     end
 
     def audit_truncated?
       @audit_truncated
     end
 
-    def to_document(capture_level:, domain_overrides: {})
+    def to_document(capture_level:, domain_overrides: {}, include_timeline: true)
       base_rank = CAPTURE_LEVEL_RANK.fetch(capture_level, 1)
 
       doc = {}
@@ -282,7 +300,7 @@ module OpenTrace
         doc[:file]   = filter_captures(@file_captures, :file, base_rank, domain_overrides)     unless @file_captures.empty? && !domain_included?(:file, base_rank, domain_overrides)
         doc[:audit]  = filter_captures(@audit_captures, :audit, base_rank, domain_overrides)   unless @audit_captures.empty? && !domain_included?(:audit, base_rank, domain_overrides)
         doc[:logs]   = filter_captures(@logs, :log, base_rank, domain_overrides)               unless @logs.empty? && !domain_included?(:log, base_rank, domain_overrides)
-        doc[:timeline] = @timeline.dup unless @timeline.empty?
+        doc[:timeline] = @timeline.dup if include_timeline && !@timeline.empty?
       end
 
       doc[:audit_truncated] = true if @audit_truncated
@@ -308,11 +326,36 @@ module OpenTrace
       @timeline.clear
 
       @audit_truncated = false
+      @buffer_bytes    = BASE_BYTE_ESTIMATE
+      @buffer_exceeded = false
 
       reset_fields!
     end
 
     private
+
+    # Reserve `bytes` against the per-buffer cap. Returns false (and latches the
+    # exceeded flag) once the buffer would cross @max_buffer_bytes, so callers
+    # stop appending instead of growing without bound.
+    def room_for?(bytes)
+      return false if @buffer_exceeded
+
+      if @buffer_bytes + bytes > @max_buffer_bytes
+        @buffer_exceeded = true
+        return false
+      end
+
+      @buffer_bytes += bytes
+      true
+    end
+
+    def string_bytes(value)
+      case value
+      when String then value.bytesize
+      when nil then 0
+      else value.to_s.bytesize
+      end
+    end
 
     def reset_fields!
       # Request/response

@@ -333,6 +333,33 @@ RSpec.describe OpenTrace::Client do
     end
   end
 
+  describe "PII scrubbing (finding #5)" do
+    it "scrubs the top-level message as well as the body" do
+      config.pii_scrubbing = true
+      stub_request(:post, "https://opentrace.test/api/logs")
+        .to_return(status: 201, body: '{"count":1}')
+
+      scrub_client = described_class.new(config)
+      scrub_client.enqueue({
+        level: "INFO",
+        message: "user email is alice@example.com",
+        body: { context: { note: "card 4111 1111 1111 1111" } }
+      })
+      sleep 0.5
+      scrub_client.shutdown(timeout: 2)
+
+      expect(
+        a_request(:post, "https://opentrace.test/api/logs")
+          .with { |req|
+            payload = parse_batch(req).first
+            payload["message"].include?("[REDACTED]") &&
+              !payload["message"].include?("alice@example.com") &&
+              payload.dig("body", "context", "note").include?("[REDACTED]")
+          }
+      ).to have_been_made
+    end
+  end
+
   describe "thread behavior" do
     it "does not start a thread at initialization" do
       fresh_client = described_class.new(config)

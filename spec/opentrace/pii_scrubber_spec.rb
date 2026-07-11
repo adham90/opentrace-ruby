@@ -54,6 +54,32 @@ RSpec.describe OpenTrace::PiiScrubber do
       expect(hash[:users][0][:email]).to eq("[REDACTED]")
     end
 
+    it "matches sensitive keys by substring (finding #5)" do
+      hash = {
+        password_confirmation: "x",
+        stripe_token: "tok_123",
+        user_password: "y",
+        author_id: 5 # contains 'auth' but is NOT sensitive
+      }
+      described_class.scrub!(hash)
+      expect(hash[:password_confirmation]).to eq("[REDACTED]")
+      expect(hash[:stripe_token]).to eq("[REDACTED]")
+      expect(hash[:user_password]).to eq("[REDACTED]")
+      expect(hash[:author_id]).to eq(5)
+    end
+
+    it "descends into arrays of arrays" do
+      hash = { rows: [["alice@test.com", "ok"], ["bob@test.com"]] }
+      described_class.scrub!(hash)
+      expect(hash[:rows]).to eq([["[REDACTED]", "ok"], ["[REDACTED]"]])
+    end
+
+    it "does not redact 13-digit epoch-millisecond timestamps as credit cards" do
+      hash = { logged_at_ms: "1707744000000" }
+      described_class.scrub!(hash)
+      expect(hash[:logged_at_ms]).to eq("1707744000000")
+    end
+
     it "does not modify non-PII strings" do
       hash = { message: "User signed up", count: 42 }
       described_class.scrub!(hash)

@@ -65,13 +65,18 @@ def configure_opentrace!(overrides = {})
     c.sampler              = overrides[:sampler]              if overrides.key?(:sampler)
     c.before_send          = overrides[:before_send]          if overrides.key?(:before_send)
     c.ignore_paths         = overrides[:ignore_paths]         if overrides.key?(:ignore_paths)
-    c.capture_depth        = overrides[:capture_depth]        if overrides.key?(:capture_depth)
+    # Deep capture is OFF by default in stock config (capture_depth: :none).
+    # Tests exercise deep capture, so the helper opts in with :standard unless
+    # a spec overrides it. Truly-stock behavior is tested via raw OpenTrace.configure.
+    c.capture_depth        = overrides.fetch(:capture_depth, :standard)
     c.email_capture        = overrides[:email_capture]        if overrides.key?(:email_capture)
     c.sql_capture          = overrides[:sql_capture]          if overrides.key?(:sql_capture)
     c.http_capture         = overrides[:http_capture]         if overrides.key?(:http_capture)
     c.audit_capture        = overrides[:audit_capture]        if overrides.key?(:audit_capture)
     c.request_capture      = overrides[:request_capture]      if overrides.key?(:request_capture)
     c.max_total_buffer_bytes = overrides[:max_total_buffer_bytes] if overrides.key?(:max_total_buffer_bytes)
+    c.max_buffer_bytes     = overrides[:max_buffer_bytes]     if overrides.key?(:max_buffer_bytes)
+    c.capture_request_body = overrides[:capture_request_body] if overrides.key?(:capture_request_body)
   end
 end
 
@@ -91,12 +96,7 @@ end
 # body["level"], body["message"], body["metadata"] continue to work.
 def parse_log_entries(req)
   raw = decompress_body(req.body)
-  body = begin
-    JSON.parse(raw)
-  rescue JSON::ParserError
-    require "msgpack"
-    MessagePack.unpack(raw)
-  end
+  body = JSON.parse(raw)
   entries = body.is_a?(Array) ? body : [body]
   entries.map { |e| normalize_log_entry(e) }
 end

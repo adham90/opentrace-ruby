@@ -10,7 +10,6 @@ module BenchHelper
   end
 end
 require "opentrace/ulid"
-require "opentrace/ring_buffer"
 require "opentrace/request_buffer"
 require "opentrace/buffer_pool"
 require "opentrace/capture_rules"
@@ -27,35 +26,6 @@ RSpec.describe "Deep Capture Performance" do
       elapsed = BenchHelper.realtime { 10_000.times { OpenTrace::ULID.generate } }
       puts "    ULID: #{(elapsed * 1000).round(1)}ms for 10K (#{(elapsed / 10_000 * 1_000_000).round(1)}μs/call)"
       expect(elapsed).to be < 0.1 # under 100ms for 10K (includes mutex overhead)
-    end
-  end
-
-  describe "RingBuffer vs Thread::Queue" do
-    it "RingBuffer push/pop is competitive with Thread::Queue" do
-      ring = OpenTrace::RingBuffer.new(capacity: 2048)
-      tq = Thread::Queue.new
-
-      ring_time = BenchHelper.realtime do
-        iterations.times do |i|
-          ring.push(i, byte_size: 100)
-        end
-        ring.pop_batch(iterations)
-      end
-
-      tq_time = BenchHelper.realtime do
-        iterations.times do |i|
-          tq.push(i)
-        end
-        iterations.times { tq.pop(true) rescue nil }
-      end
-
-      puts "    RingBuffer: #{(ring_time * 1000).round(1)}ms for #{iterations} push+pop"
-      puts "    Thread::Queue: #{(tq_time * 1000).round(1)}ms for #{iterations} push+pop"
-      puts "    Ratio: #{(ring_time / tq_time).round(2)}x"
-
-      # Ring buffer should be within 5x of Thread::Queue (it has byte tracking overhead;
-      # margin raised from 3x to 5x to avoid flaky failures under variable system load)
-      expect(ring_time).to be < tq_time * 5
     end
   end
 
@@ -199,53 +169,6 @@ RSpec.describe "Deep Capture Performance" do
       per_call = elapsed / iterations * 1_000_000
       puts "    MemoryGuard allocate+release: #{per_call.round(2)}μs/call"
       expect(per_call).to be < 1
-    end
-  end
-
-  describe "Serializer" do
-    let(:document) do
-      {
-        "id" => "01TEST",
-        "timestamp" => "2026-04-03T12:00:00Z",
-        "level" => "INFO",
-        "service" => "bench",
-        "event" => {
-          "type" => "http.request",
-          "message" => "POST /api/orders 201 42ms",
-          "db" => {
-            "queries" => 20.times.map { |i|
-              { "sql" => "SELECT * FROM users WHERE id = #{i}", "binds" => [i], "duration_ms" => 1.0 + i }
-            }
-          },
-          "external" => [
-            { "method" => "POST", "url" => "https://api.stripe.com/v1/charges", "status" => 200, "duration_ms" => 100.0,
-              "response" => { "body" => '{"id": "ch_xyz", "status": "succeeded"}' } }
-          ]
-        }
-      }
-    end
-
-    it "MessagePack produces smaller output than JSON" do
-      msgpack_time = BenchHelper.realtime do
-        1000.times { OpenTrace::Serializer.encode(document, format: :msgpack) }
-      end
-
-      json_time = BenchHelper.realtime do
-        1000.times { OpenTrace::Serializer.encode(document, format: :json) }
-      end
-
-      msgpack_bytes, = OpenTrace::Serializer.encode(document, format: :msgpack)
-      json_bytes, = OpenTrace::Serializer.encode(document, format: :json)
-
-      puts "    MessagePack: #{(msgpack_time * 1000).round(1)}ms for 1K encodes (#{msgpack_bytes.bytesize} bytes)"
-      puts "    JSON: #{(json_time * 1000).round(1)}ms for 1K encodes (#{json_bytes.bytesize} bytes)"
-      puts "    Speed ratio: #{(json_time / [msgpack_time, 0.0001].max).round(1)}x"
-      puts "    Size: MessagePack is #{((1 - msgpack_bytes.bytesize.to_f / json_bytes.bytesize) * 100).round(0)}% smaller"
-
-      # MessagePack speed advantage is not guaranteed under variable system load
-      # (JIT warmup, GC pauses, etc.), so only assert on the deterministic property:
-      # MessagePack binary encoding always produces fewer bytes than JSON text.
-      expect(msgpack_bytes.bytesize).to be < json_bytes.bytesize
     end
   end
 

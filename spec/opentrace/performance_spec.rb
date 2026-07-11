@@ -37,7 +37,7 @@ RSpec.describe "Performance" do
   end
 
   describe "context proc caching" do
-    it "does not call context proc inside a request (buffer path)" do
+    it "resolves the context proc exactly once per request (cached, not per-log)" do
       call_count = 0
       configure_opentrace!(context: -> {
         call_count += 1
@@ -51,7 +51,9 @@ RSpec.describe "Performance" do
 
       middleware.call("action_dispatch.request_id" => "perf-test")
 
-      expect(call_count).to eq(0), "Context proc was called #{call_count} times (expected 0 inside request)"
+      # Resolved once at buffer setup and cached in Fiber[:opentrace_cached_context];
+      # the 5 in-request log calls must not re-run the (expensive) proc.
+      expect(call_count).to eq(1), "Context proc was called #{call_count} times (expected 1: resolved once, cached)"
     end
 
     it "evaluates context proc for standalone log calls" do
